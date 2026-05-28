@@ -18,8 +18,17 @@ void DistanceLookup::init(const std::string& filename)
 }
 
 double DistanceLookup::getDistance(int pixel){
-    if (pixel < 0 || pixel > maxPixel_) {
+    if (pixel < 0 || data_.empty()) {
         return -1;
+    }
+    if (pixel > maxPixel_) {
+        if (data_.size() < 2) {
+            return data_.back().distance;
+        }
+
+        const auto& p0 = data_[data_.size() - 2];
+        const auto& p1 = data_[data_.size() - 1];
+        return interpolate(p0.pixel, p0.distance, p1.pixel, p1.distance, pixel);
     }
     return lookupArray_[pixel];
 }

@@ -79,25 +79,52 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     Mat image_hsv;
     cv::cvtColor(image_raw, image_hsv, COLOR_BGR2HSV);
 
-    Mat image_white;
-    inRange(image_hsv, Scalar(0, 35, 30), Scalar(180, 255, 255), image_white);
+    Mat mask_red1, mask_red2;
+    // 场地图红色 RGB(250,74,59)，OpenCV HSV 约为 (2,195,250)。
+    inRange(image_hsv, Scalar(0, 80, 80), Scalar(12, 255, 255), mask_red1);
+    inRange(image_hsv, Scalar(170, 80, 80), Scalar(180, 255, 255), mask_red2);
+    image_red = mask_red1 | mask_red2;  // 合并两个红色范围
+
+    // 场地图浅蓝 RGB(92,169,221)，OpenCV HSV 约为 (102,149,221)。
+    // 深色紫/蓝边 Hue 接近但更暗且饱和度更高，所以用亮度和饱和度排除它。
+    inRange(image_hsv, Scalar(96, 70, 170), Scalar(110, 200, 255), image_blue);
+
+    // 场地图洋红 RGB(255,25,255)，OpenCV HSV 约为 (150,230,255)。
+    Mat image_magenta;
+    inRange(image_hsv, Scalar(130, 45, 60), Scalar(170, 255, 255), image_magenta);
+
+    Mat image_white = image_magenta;
     morphologyEx(image_white, image_white, MORPH_OPEN,
                  getStructuringElement(MORPH_RECT, Size(3, 3)));
 
-    // 添加红色检测
-    Mat mask_red1, mask_red2;
-    // HSV空间中红色的两个范围
-    inRange(image_hsv, Scalar(0, 80, 80), Scalar(12, 255, 255), mask_red1);
-    inRange(image_hsv, Scalar(165, 80, 80), Scalar(180, 255, 255), mask_red2);
-    image_red = mask_red1 | mask_red2;  // 合并两个红色范围
-
-    // 添加蓝色检测
-    Mat mask_blue;
-    inRange(image_hsv, Scalar(90, 45, 45), Scalar(125, 255, 255), mask_blue);  // HSV空间中的蓝色范围
-    image_blue = mask_blue;
-
     int center_x = image_hsv.cols / 2;
     int center_y = image_hsv.rows / 2;
+    const int self_mask_radius = std::min(image_hsv.cols, image_hsv.rows) / 8;
+    circle(image_white, Point(center_x, center_y), self_mask_radius, Scalar(0), -1);
+    circle(image_red, Point(center_x, center_y), self_mask_radius, Scalar(0), -1);
+    circle(image_blue, Point(center_x, center_y), self_mask_radius, Scalar(0), -1);
+    const double min_feature_distance = 0.25;
+    const double max_feature_distance = 4.50;
+    const double rotated_cols = image_corrected.rows;
+    const double rotated_rows = image_corrected.cols;
+    const double camera_to_map_scale = std::min(
+        static_cast<double>(image_lines_map.cols) / rotated_cols,
+        static_cast<double>(image_lines_map.rows) / rotated_rows);
+    const double projection_scale_correction = 1.00;
+    const double map_pixels_per_meter = pixelsPerMeterX() * projection_scale_correction;
+    cv::Point2f map_center(image_lines_map.cols / 2.0f, image_lines_map.rows / 2.0f);
+    std::vector<cv::Point2f> projected_white_points;
+    std::vector<cv::Point2f> projected_red_points;
+    std::vector<cv::Point2f> projected_blue_points;
+    auto addProjectedPoint = [&](std::vector<cv::Point2f>& points, double distance_m, double rad) {
+        cv::Point2f point(
+            map_center.x - distance_m * map_pixels_per_meter * std::sin(rad),
+            map_center.y + distance_m * map_pixels_per_meter * std::cos(rad));
+        if (point.x >= 0 && point.x < image_lines_map.cols &&
+            point.y >= 0 && point.y < image_lines_map.rows) {
+            points.push_back(point);
+        }
+    };
 
     // 用射线扫描彩色边缘、红色和蓝色图像
     for (int angle = 0; angle < 360; angle += 4) {
@@ -121,9 +148,11 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
                     cv::circle(image_lines, Point(x,y), 2, cv::Scalar(255, 255, 255), -1);
 
                     // 畸变矫正
-                    double dist = distanceLookup.getDistance(length)*20;
-                    if(dist > 0 && dist < 150)
+                    double distance_m = distanceLookup.getDistance(length);
+                    if(distance_m > min_feature_distance && distance_m < max_feature_distance)
                     {
+                        addProjectedPoint(projected_white_points, distance_m, rad);
+                        double dist = distance_m * map_pixels_per_meter / camera_to_map_scale;
                         int x2 = static_cast<int>(center_x + dist * cos(rad));
                         int y2 = static_cast<int>(center_y + dist * sin(rad));
                         if (x2 >= 0 && x2 < image_corrected.cols && y2 >= 0 && y2 < image_corrected.rows) {
@@ -142,9 +171,11 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
                     cv::line(image_show, Point(x, y - 5), Point(x, y + 5), Scalar(0, 255, 255), 1);
 
                     // 畸变矫正
-                    double dist = distanceLookup.getDistance(length)*20;
-                    if(dist > 0 && dist < 150)
+                    double distance_m = distanceLookup.getDistance(length);
+                    if(distance_m > min_feature_distance && distance_m < max_feature_distance)
                     {
+                        addProjectedPoint(projected_red_points, distance_m, rad);
+                        double dist = distance_m * map_pixels_per_meter / camera_to_map_scale;
                         int x2 = static_cast<int>(center_x + dist * cos(rad));
                         int y2 = static_cast<int>(center_y + dist * sin(rad));
                         if (x2 >= 0 && x2 < image_sideline_red.cols && y2 >= 0 && y2 < image_sideline_red.rows) {
@@ -163,9 +194,11 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
                     cv::line(image_show, Point(x, y - 5), Point(x, y + 5), Scalar(255, 255, 0), 1);
 
                     // 畸变矫正
-                    double dist = distanceLookup.getDistance(length)*20;
-                    if(dist > 0 && dist < 150)
+                    double distance_m = distanceLookup.getDistance(length);
+                    if(distance_m > min_feature_distance && distance_m < max_feature_distance)
                     {
+                        addProjectedPoint(projected_blue_points, distance_m, rad);
+                        double dist = distance_m * map_pixels_per_meter / camera_to_map_scale;
                         int x2 = static_cast<int>(center_x + dist * cos(rad));
                         int y2 = static_cast<int>(center_y + dist * sin(rad));
                         if (x2 >= 0 && x2 < image_sideline_blue.cols && y2 >= 0 && y2 < image_sideline_blue.rows) {
@@ -185,15 +218,10 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     // 计算旋转后图像的中心点
     cv::Point2f img_center(rotated_image.cols/2.0f, rotated_image.rows/2.0f);
     
-    const float scale_factor = std::min(
-        static_cast<float>(image_lines_map.cols) / rotated_image.cols,
-        static_cast<float>(image_lines_map.rows) / rotated_image.rows);
-    cv::Point2f map_center(image_lines_map.cols / 2.0f, image_lines_map.rows / 2.0f);
-
-    // 从旋转后的图像中提取彩色边缘、红色和蓝色点
-    std::vector<cv::Point2f> white_points;
-    std::vector<cv::Point2f> red_points;
-    std::vector<cv::Point2f> blue_points;
+    // 从原始射线检测结果直接投影到地图坐标，避免中间图像尺寸裁剪远距离特征。
+    std::vector<cv::Point2f> white_points = projected_white_points;
+    std::vector<cv::Point2f> red_points = projected_red_points;
+    std::vector<cv::Point2f> blue_points = projected_blue_points;
 
     // 用于计算平均位置的变量
     cv::Point2f red_avg(0.0f, 0.0f);
@@ -203,29 +231,6 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     cv::Mat rotated_red, rotated_blue;
     cv::rotate(image_sideline_red, rotated_red, cv::ROTATE_90_CLOCKWISE);
     cv::rotate(image_sideline_blue, rotated_blue, cv::ROTATE_90_CLOCKWISE);
-
-    for(int y = 0; y < rotated_image.rows; y++) {
-        for(int x = 0; x < rotated_image.cols; x++) {
-            // 处理白点
-            if(rotated_image.at<uchar>(y,x) == 255) {
-                float scaled_x = map_center.x + (x - img_center.x) * scale_factor;
-                float scaled_y = map_center.y + (y - img_center.y) * scale_factor;
-                white_points.push_back(cv::Point2f(scaled_x, scaled_y));
-            }
-            // 处理红点
-            if(rotated_red.at<uchar>(y,x) == 255) {
-                float scaled_x = map_center.x + (x - img_center.x) * scale_factor;
-                float scaled_y = map_center.y + (y - img_center.y) * scale_factor;
-                red_points.push_back(cv::Point2f(scaled_x, scaled_y));
-            }
-            // 处理蓝点
-            if(rotated_blue.at<uchar>(y,x) == 255) {
-                float scaled_x = map_center.x + (x - img_center.x) * scale_factor;
-                float scaled_y = map_center.y + (y - img_center.y) * scale_factor;
-                blue_points.push_back(cv::Point2f(scaled_x, scaled_y));
-            }
-        }
-    }
 
     static int debug_frame_count = 0;
     if (++debug_frame_count % 30 == 0) {
@@ -276,7 +281,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
     float rad = (counter_yaw) * CV_PI / 180.0;
     
-    if (has_sidelines) {
+    if (has_sidelines && !odom_ready) {
         // 初始化范围统计变量
         float min_x = std::numeric_limits<float>::max();
         float max_x = std::numeric_limits<float>::lowest();
@@ -447,7 +452,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
         counter_x / pixelsPerMeterX(),
         -counter_y / pixelsPerMeterY(),
         -counter_yaw);
-    cv::putText(monitor_image, coordinates, cv::Point(200, 30), 
+    cv::putText(monitor_image, coordinates, cv::Point(0, 30), 
                 cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 0), 2);
     
     // 绘制机器人图标

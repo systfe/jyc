@@ -73,7 +73,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
     // 添加蓝色检测
     Mat mask_blue;
-    inRange(image_hsv, Scalar(90, 45, 45), Scalar(125, 255, 255), mask_blue);  // HSV空间中的蓝色范围
+    inRange(image_hsv, Scalar(96, 70, 170), Scalar(110, 200, 255), mask_blue);  // 场地图亮蓝色范围
     image_blue = mask_blue;
 
     int center_x = image_hsv.cols / 2;

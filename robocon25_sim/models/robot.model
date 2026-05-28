@@ -2,7 +2,7 @@
 <robot name="wpb_home_gazebo">
 
 <material name="robot_body_color">
-  <color rgba="0.0 0.45 0.55 1.0"/>
+  <color rgba="0.05 0.05 0.05 1.0"/>
 </material>
 
 <link name="base_footprint">
@@ -163,14 +163,14 @@
 
 <!-- Gazebo plugin for WPR -->
 <gazebo>
-    <plugin name="base_controller" filename="libgazebo_ros_planar_move.so">
-    <commandTopic>cmd_vel</commandTopic>
-    <cmdTimeout>-1.0</cmdTimeout>
-    <odometryTopic>odom</odometryTopic>
-    <odometryFrame>odom</odometryFrame>
-    <odometryRate>20.0</odometryRate>
-    <robotBaseFrame>base_footprint</robotBaseFrame>
-    </plugin>
+  <plugin name="base_controller" filename="librobocon_cmd_vel_model_plugin.so">
+    <ros>
+      <remapping>cmd_vel:=cmd_vel</remapping>
+      <remapping>odom:=odom</remapping>
+    </ros>
+    <publish_rate>30</publish_rate>
+    <cmd_timeout>0.25</cmd_timeout>
+  </plugin>
 </gazebo>
 
 <gazebo reference="camera_link">
@@ -201,7 +201,7 @@
 
 <!-- IMU plugin for 'body_link' -->
 <gazebo reference="body_link">
-  <material>Gazebo/Orange</material>
+  <material>Gazebo/Black</material>
   <gravity>true</gravity>
   <sensor name="imu_sensor" type="imu">
     <always_on>true</always_on>

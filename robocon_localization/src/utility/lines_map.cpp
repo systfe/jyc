@@ -35,8 +35,13 @@ cv::Mat LinesMap::createColorMask() const {
     cv::Mat hsv;
     cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
 
-    cv::Mat colorMask;
-    cv::inRange(hsv, cv::Scalar(0, 35, 30), cv::Scalar(180, 255, 255), colorMask);
+    cv::Mat redMask1, redMask2, blueMask, magentaMask;
+    cv::inRange(hsv, cv::Scalar(0, 80, 80), cv::Scalar(12, 255, 255), redMask1);
+    cv::inRange(hsv, cv::Scalar(170, 80, 80), cv::Scalar(180, 255, 255), redMask2);
+    cv::inRange(hsv, cv::Scalar(96, 70, 170), cv::Scalar(110, 200, 255), blueMask);
+    cv::inRange(hsv, cv::Scalar(130, 45, 60), cv::Scalar(170, 255, 255), magentaMask);
+
+    cv::Mat colorMask = magentaMask;
 
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
     cv::morphologyEx(colorMask, colorMask, cv::MORPH_OPEN, kernel);
@@ -49,7 +54,7 @@ cv::Mat LinesMap::createRedMask() const {
 
     cv::Mat redMask1, redMask2;
     cv::inRange(hsv, cv::Scalar(0, 80, 80), cv::Scalar(12, 255, 255), redMask1);
-    cv::inRange(hsv, cv::Scalar(165, 80, 80), cv::Scalar(180, 255, 255), redMask2);
+    cv::inRange(hsv, cv::Scalar(170, 80, 80), cv::Scalar(180, 255, 255), redMask2);
     return redMask1 | redMask2;
 }
 
@@ -58,7 +63,7 @@ cv::Mat LinesMap::createBlueMask() const {
     cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
 
     cv::Mat blueMask;
-    cv::inRange(hsv, cv::Scalar(90, 45, 45), cv::Scalar(125, 255, 255), blueMask);
+    cv::inRange(hsv, cv::Scalar(96, 70, 170), cv::Scalar(110, 200, 255), blueMask);
     return blueMask;
 }
 
