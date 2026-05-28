@@ -16,6 +16,11 @@ public:
 
 private:
     cv::Mat createGradientMask(int size);
+    cv::Mat createColorMask() const;
+    cv::Mat createRedMask() const;
+    cv::Mat createBlueMask() const;
+    cv::Mat createEdgeMask(const cv::Mat& mask) const;
+    cv::Mat createGradientFromEdges(const cv::Mat& edgeMask, int radius) const;
     void generateGradientImage();
     void generateBlueGradientImage();
     void generateRedGradientImage();

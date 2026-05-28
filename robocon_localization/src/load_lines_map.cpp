@@ -23,6 +23,14 @@ int main(int argc, char** argv) {
         cv::imwrite(savePath + "/red_lines.png", redImage);
     }
 
+    size_t sep = imagePath.find_last_of("/\\");
+    if (sep != std::string::npos) {
+        std::string configPath = imagePath.substr(0, sep);
+        cv::imwrite(configPath + "/white_lines.png", whiteImage);
+        cv::imwrite(configPath + "/blue_lines.png", blueImage);
+        cv::imwrite(configPath + "/red_lines.png", redImage);
+    }
+
     cv::imshow("lines", whiteImage);
     cv::imshow("blue map", blueImage);
     cv::imshow("red map", redImage);

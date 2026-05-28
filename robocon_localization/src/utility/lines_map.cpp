@@ -10,11 +10,11 @@ void LinesMap::loadImage(const std::string& imagePath) {
         ROS_ERROR("打不开图片文件: %s", imagePath.c_str());
         return;
     }
-    printf("正在初始化 白色场线 匹配模板，请稍等 ……\n");
+    printf("正在初始化 彩色边缘 匹配模板，请稍等 ……\n");
     generateGradientImage();
-    printf("正在初始化 蓝色边线 匹配模板，请稍等 ……\n");
+    printf("正在初始化 蓝色安全区边缘 匹配模板，请稍等 ……\n");
     generateBlueGradientImage();
-    printf("正在初始化 红色边线 匹配模板，请稍等 ……\n");
+    printf("正在初始化 红色安全区边缘 匹配模板，请稍等 ……\n");
     generateRedGradientImage();
 }
 
@@ -31,125 +31,80 @@ cv::Mat LinesMap::createGradientMask(int size) {
     return mask;
 }
 
-void LinesMap::generateGradientImage() {
-    int maskSize = 200;
-    cv::Mat mask = createGradientMask(maskSize);
-    gradientImage = cv::Mat::zeros(lines_image.size(), CV_8UC1);
+cv::Mat LinesMap::createColorMask() const {
+    cv::Mat hsv;
+    cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
 
-    for (int y = 0; y < lines_image.rows; y++) {
-        for (int x = 0; x < lines_image.cols; x++) {
-            // 获取BGR像素值
-            cv::Vec3b pixel = lines_image.at<cv::Vec3b>(y, x);
-            // 判断是否为白色像素 (B,G,R 值都接近255)
-            if (pixel[0] > 240 && pixel[1] > 240 && pixel[2] > 240) {
-                for (int dy = -maskSize/2; dy < maskSize/2; dy++) {
-                    for (int dx = -maskSize/2; dx < maskSize/2; dx++) {
-                        int newY = y + dy;
-                        int newX = x + dx;
-                        
-                        if (newY >= 0 && newY < gradientImage.rows && 
-                            newX >= 0 && newX < gradientImage.cols) {
-                            int maskY = dy + maskSize/2;
-                            int maskX = dx + maskSize/2;
-                            uchar maskValue = mask.at<uchar>(maskY, maskX);
-                            
-                            if (maskValue > gradientImage.at<uchar>(newY, newX)) {
-                                gradientImage.at<uchar>(newY, newX) = maskValue;
-                            }
-                        }
-                    }
-                }
+    cv::Mat colorMask;
+    cv::inRange(hsv, cv::Scalar(0, 35, 30), cv::Scalar(180, 255, 255), colorMask);
+
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+    cv::morphologyEx(colorMask, colorMask, cv::MORPH_OPEN, kernel);
+    return colorMask;
+}
+
+cv::Mat LinesMap::createRedMask() const {
+    cv::Mat hsv;
+    cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
+
+    cv::Mat redMask1, redMask2;
+    cv::inRange(hsv, cv::Scalar(0, 80, 80), cv::Scalar(12, 255, 255), redMask1);
+    cv::inRange(hsv, cv::Scalar(165, 80, 80), cv::Scalar(180, 255, 255), redMask2);
+    return redMask1 | redMask2;
+}
+
+cv::Mat LinesMap::createBlueMask() const {
+    cv::Mat hsv;
+    cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
+
+    cv::Mat blueMask;
+    cv::inRange(hsv, cv::Scalar(90, 45, 45), cv::Scalar(125, 255, 255), blueMask);
+    return blueMask;
+}
+
+cv::Mat LinesMap::createEdgeMask(const cv::Mat& mask) const {
+    cv::Mat edges;
+    cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
+    cv::morphologyEx(mask, edges, cv::MORPH_GRADIENT, kernel);
+    cv::threshold(edges, edges, 0, 255, cv::THRESH_BINARY);
+    return edges;
+}
+
+cv::Mat LinesMap::createGradientFromEdges(const cv::Mat& edgeMask, int radius) const {
+    cv::Mat invertedEdges;
+    cv::threshold(edgeMask, invertedEdges, 0, 255, cv::THRESH_BINARY_INV);
+
+    cv::Mat distances;
+    cv::distanceTransform(invertedEdges, distances, cv::DIST_L2, 3);
+
+    cv::Mat gradient = cv::Mat::zeros(edgeMask.size(), CV_8UC1);
+    for (int y = 0; y < distances.rows; y++) {
+        for (int x = 0; x < distances.cols; x++) {
+            float distance = distances.at<float>(y, x);
+            if (distance <= radius) {
+                gradient.at<uchar>(y, x) = cv::saturate_cast<uchar>(255.0f * (1.0f - distance / radius));
             }
         }
     }
+    return gradient;
+}
+
+void LinesMap::generateGradientImage() {
+    cv::Mat edgeMask = createEdgeMask(createColorMask());
+    int radius = std::max(30, std::max(lines_image.cols, lines_image.rows) / 20);
+    gradientImage = createGradientFromEdges(edgeMask, radius);
 }
 
 void LinesMap::generateBlueGradientImage() {
-    cv::Mat hsv;
-    cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
-    
-    // 定义浅蓝色的HSV范围
-    cv::Mat blueMask;
-    cv::Scalar lowerBlue(90, 50, 50);   // HSV中的浅蓝色下限
-    cv::Scalar upperBlue(120, 255, 255); // HSV中的浅蓝色上限
-    cv::inRange(hsv, lowerBlue, upperBlue, blueMask);
-    
-    // 创建渐变掩码
-    int maskSize = 800;
-    cv::Mat gradientMask = createGradientMask(maskSize);
-    
-    // 初始化blueIMap
-    blueIMap = cv::Mat::zeros(lines_image.size(), CV_8UC1);
-    
-    // 对每个蓝色像素应用渐变
-    for (int y = 0; y < blueMask.rows; y++) {
-        for (int x = 0; x < blueMask.cols; x++) {
-            if (blueMask.at<uchar>(y, x) > 0) {
-                for (int dy = -maskSize/2; dy < maskSize/2; dy++) {
-                    for (int dx = -maskSize/2; dx < maskSize/2; dx++) {
-                        int newY = y + dy;
-                        int newX = x + dx;
-                        
-                        if (newY >= 0 && newY < blueIMap.rows && 
-                            newX >= 0 && newX < blueIMap.cols) {
-                            int maskY = dy + maskSize/2;
-                            int maskX = dx + maskSize/2;
-                            uchar maskValue = gradientMask.at<uchar>(maskY, maskX);
-                            
-                            if (maskValue > blueIMap.at<uchar>(newY, newX)) {
-                                blueIMap.at<uchar>(newY, newX) = maskValue;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    cv::Mat edgeMask = createEdgeMask(createBlueMask());
+    int radius = std::max(60, std::max(lines_image.cols, lines_image.rows) / 10);
+    blueIMap = createGradientFromEdges(edgeMask, radius);
 }
 
 void LinesMap::generateRedGradientImage() {
-    cv::Mat hsv;
-    cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
-    
-    // 定义黄色的HSV范围
-    cv::Mat yellowMask;
-    cv::Scalar lowerYellow(20, 100, 100);   // HSV中的黄色下限
-    cv::Scalar upperYellow(30, 255, 255);    // HSV中的黄色上限
-    
-    // 检测黄色区域
-    cv::inRange(hsv, lowerYellow, upperYellow, yellowMask);
-    
-    // 创建渐变掩码
-    int maskSize = 800;
-    cv::Mat gradientMask = createGradientMask(maskSize);
-    
-    // 初始化redIMap
-    redIMap = cv::Mat::zeros(lines_image.size(), CV_8UC1);
-    
-    // 对每个红色像素应用渐变
-    for (int y = 0; y < yellowMask.rows; y++) {
-        for (int x = 0; x < yellowMask.cols; x++) {
-            if (yellowMask.at<uchar>(y, x) > 0) {
-                for (int dy = -maskSize/2; dy < maskSize/2; dy++) {
-                    for (int dx = -maskSize/2; dx < maskSize/2; dx++) {
-                        int newY = y + dy;
-                        int newX = x + dx;
-                        
-                        if (newY >= 0 && newY < redIMap.rows && 
-                            newX >= 0 && newX < redIMap.cols) {
-                            int maskY = dy + maskSize/2;
-                            int maskX = dx + maskSize/2;
-                            uchar maskValue = gradientMask.at<uchar>(maskY, maskX);
-                            
-                            if (maskValue > redIMap.at<uchar>(newY, newX)) {
-                                redIMap.at<uchar>(newY, newX) = maskValue;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
+    cv::Mat edgeMask = createEdgeMask(createRedMask());
+    int radius = std::max(60, std::max(lines_image.cols, lines_image.rows) / 10);
+    redIMap = createGradientFromEdges(edgeMask, radius);
 }
 
 cv::Mat LinesMap::getLinesMap() const {

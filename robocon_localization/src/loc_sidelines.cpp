@@ -4,6 +4,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <cmath>
+#include <nav_msgs/msg/odometry.hpp>
 #include "distance_lookup.h"
 #include "lines_map.h"
 #include "lines_matcher.h"
@@ -18,15 +19,43 @@ static LinesMap lines_map;
 static float counter_x = 0;
 static float counter_y = 0;
 static float counter_yaw = 0;
+static float odom_x = 0;
+static float odom_y = 0;
+static float odom_yaw = 0;
+static bool odom_ready = false;
 static cv::Mat field_image;
 static cv::Mat monitor_image;
 static cv::Mat image_lines_all;
 static cv::Mat image_lines_map;
 static cv::Mat image_red_map;
 static cv::Mat image_blue_map;
+static constexpr float FIELD_SIZE_METERS = 3.0f;
+
+static float pixelsPerMeterX()
+{
+    return image_lines_map.empty() ? 1.0f : image_lines_map.cols / FIELD_SIZE_METERS;
+}
+
+static float pixelsPerMeterY()
+{
+    return image_lines_map.empty() ? 1.0f : image_lines_map.rows / FIELD_SIZE_METERS;
+}
+
+static void syncPoseFromOdom()
+{
+    if (!odom_ready) {
+        return;
+    }
+
+    counter_x = odom_x * pixelsPerMeterX();
+    counter_y = -odom_y * pixelsPerMeterY();
+    counter_yaw = -odom_yaw;
+}
 
 void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg) 
 {
+    syncPoseFromOdom();
+
     cv_bridge::CvImagePtr cv_ptr;
     try {
         cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
@@ -46,35 +75,31 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     Mat image_sideline_red = image_lines.clone();
     Mat image_sideline_blue = image_lines.clone();
 
-    // 1. HSV空间的白色检测
+    // 1. HSV空间的彩色区域检测。新场地是白底加彩色区域，不能再把白底当场线。
     Mat image_hsv;
     cv::cvtColor(image_raw, image_hsv, COLOR_BGR2HSV);
 
-    Mat mask_hsv;
-    inRange(image_hsv, Scalar(0, 0, 210), Scalar(180, 30, 255), mask_hsv); 
-
-    // 2. RGB空间的白色检测
-    Mat mask_rgb;
-    inRange(image_raw, Scalar(200, 200, 200), Scalar(255, 255, 255), mask_rgb);
-
-    Mat image_white = mask_hsv & mask_rgb;  // 使用与运算,要求同时满足两个条件
+    Mat image_white;
+    inRange(image_hsv, Scalar(0, 35, 30), Scalar(180, 255, 255), image_white);
+    morphologyEx(image_white, image_white, MORPH_OPEN,
+                 getStructuringElement(MORPH_RECT, Size(3, 3)));
 
     // 添加红色检测
     Mat mask_red1, mask_red2;
     // HSV空间中红色的两个范围
-    inRange(image_hsv, Scalar(0, 100, 100), Scalar(10, 255, 255), mask_red1);
-    inRange(image_hsv, Scalar(160, 100, 100), Scalar(180, 255, 255), mask_red2);
+    inRange(image_hsv, Scalar(0, 80, 80), Scalar(12, 255, 255), mask_red1);
+    inRange(image_hsv, Scalar(165, 80, 80), Scalar(180, 255, 255), mask_red2);
     image_red = mask_red1 | mask_red2;  // 合并两个红色范围
 
     // 添加蓝色检测
     Mat mask_blue;
-    inRange(image_hsv, Scalar(100, 100, 100), Scalar(124, 255, 255), mask_blue);  // HSV空间中的蓝色范围
+    inRange(image_hsv, Scalar(90, 45, 45), Scalar(125, 255, 255), mask_blue);  // HSV空间中的蓝色范围
     image_blue = mask_blue;
 
     int center_x = image_hsv.cols / 2;
     int center_y = image_hsv.rows / 2;
 
-    // 用射线扫描白线、红线和蓝线图像
+    // 用射线扫描彩色边缘、红色和蓝色图像
     for (int angle = 0; angle < 360; angle += 4) {
         double rad = angle * CV_PI / 180.0;
         unsigned char last_pixel_white = 0;
@@ -86,9 +111,9 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
             int y = static_cast<int>(center_y + length * sin(rad));
             
             if (x >= 0 && x < image_white.cols && y >= 0 && y < image_white.rows) {
-                // 检测白线边缘
+                // 检测彩色区域边缘
                 unsigned char pixel_white = image_white.at<uchar>(y, x);
-                if (last_pixel_white == 255 && pixel_white != 255) 
+                if (length > 0 && last_pixel_white != pixel_white && (last_pixel_white == 255 || pixel_white == 255))
                 {
                     // 在 image_show 中画紫色十字
                     cv::line(image_show, Point(x - 5, y), Point(x + 5, y), Scalar(255, 0, 255), 1);
@@ -160,15 +185,12 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     // 计算旋转后图像的中心点
     cv::Point2f img_center(rotated_image.cols/2.0f, rotated_image.rows/2.0f);
     
-    // 缩放比例变量
-    const float scale_factor_x = 2.4f;  // X方向缩放因子
-    const float scale_factor_y = 2.3f;  // Y方向缩放因子
-    // 计算横向偏移量，使两个图像中心对齐
-    float x_offset = (image_lines_map.cols - rotated_image.cols) / 2.0f;
-    // 计算纵向偏移量
-    float y_offset = (image_lines_map.rows - rotated_image.rows) / 2.0f;
+    const float scale_factor = std::min(
+        static_cast<float>(image_lines_map.cols) / rotated_image.cols,
+        static_cast<float>(image_lines_map.rows) / rotated_image.rows);
+    cv::Point2f map_center(image_lines_map.cols / 2.0f, image_lines_map.rows / 2.0f);
 
-    // 从旋转后的图像中提取白色、红色和蓝色点
+    // 从旋转后的图像中提取彩色边缘、红色和蓝色点
     std::vector<cv::Point2f> white_points;
     std::vector<cv::Point2f> red_points;
     std::vector<cv::Point2f> blue_points;
@@ -186,20 +208,20 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
         for(int x = 0; x < rotated_image.cols; x++) {
             // 处理白点
             if(rotated_image.at<uchar>(y,x) == 255) {
-                float scaled_x = img_center.x + (x - img_center.x) * scale_factor_x + x_offset;
-                float scaled_y = img_center.y + (y - img_center.y) * scale_factor_y + y_offset;
+                float scaled_x = map_center.x + (x - img_center.x) * scale_factor;
+                float scaled_y = map_center.y + (y - img_center.y) * scale_factor;
                 white_points.push_back(cv::Point2f(scaled_x, scaled_y));
             }
             // 处理红点
             if(rotated_red.at<uchar>(y,x) == 255) {
-                float scaled_x = img_center.x + (x - img_center.x) * scale_factor_x + x_offset;
-                float scaled_y = img_center.y + (y - img_center.y) * scale_factor_y + y_offset;
+                float scaled_x = map_center.x + (x - img_center.x) * scale_factor;
+                float scaled_y = map_center.y + (y - img_center.y) * scale_factor;
                 red_points.push_back(cv::Point2f(scaled_x, scaled_y));
             }
             // 处理蓝点
             if(rotated_blue.at<uchar>(y,x) == 255) {
-                float scaled_x = img_center.x + (x - img_center.x) * scale_factor_x + x_offset;
-                float scaled_y = img_center.y + (y - img_center.y) * scale_factor_y + y_offset;
+                float scaled_x = map_center.x + (x - img_center.x) * scale_factor;
+                float scaled_y = map_center.y + (y - img_center.y) * scale_factor;
                 blue_points.push_back(cv::Point2f(scaled_x, scaled_y));
             }
         }
@@ -216,7 +238,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
     // [1]先使用红蓝边线进行初次匹配
     const bool has_sidelines = !red_points.empty() && !blue_points.empty();
-    if (has_sidelines) {
+    if (has_sidelines && !odom_ready) {
         red_avg = LinesMatcher::calculateLinePointsAverage(red_points, image_lines_map.size());
         blue_avg = LinesMatcher::calculateLinePointsAverage(blue_points, image_lines_map.size());
         
@@ -230,9 +252,9 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
         counter_yaw = -90 - angle;
     }
     
-    cv::Point2f center(img_center.x + x_offset, img_center.y + y_offset);
+    cv::Point2f center = map_center;
 
-    if (has_sidelines) {
+    if (has_sidelines && !odom_ready) {
         int last_max_sum = 0;
         while (true) {
             MatchResult match_result = LinesMatcher::findMatch(red_points, blue_points, 
@@ -306,27 +328,29 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     }
 
     // [2] 使用白点进行场线匹配
-    int last_white_sum = 0;
-    while (true) {
-        MatchResult white_match = LinesMatcher::refineMatchWithWhitePoints(
-            white_points,
-            image_lines_map,
-            center,
-            counter_x,
-            counter_y,
-            counter_yaw
-        );
-        
-        // 如果本次匹配结果没有改善，则退出循环
-        if (white_match.max_sum <= last_white_sum) {
-            break;
+    if (!odom_ready) {
+        int last_white_sum = 0;
+        while (true) {
+            MatchResult white_match = LinesMatcher::refineMatchWithWhitePoints(
+                white_points,
+                image_lines_map,
+                center,
+                counter_x,
+                counter_y,
+                counter_yaw
+            );
+            
+            // 如果本次匹配结果没有改善，则退出循环
+            if (white_match.max_sum <= last_white_sum) {
+                break;
+            }
+            
+            // 更新计数器和上一次的最大匹配值
+            counter_x += white_match.best_dx;
+            counter_y += white_match.best_dy;
+            counter_yaw += white_match.best_angle;
+            last_white_sum = white_match.max_sum;
         }
-        
-        // 更新计数器和上一次的最大匹配值
-        counter_x += white_match.best_dx;
-        counter_y += white_match.best_dy;
-        counter_yaw += white_match.best_angle;
-        last_white_sum = white_match.max_sum;
     }
 
     // 显示匹配效果
@@ -387,7 +411,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     // for(int y = 0; y < image_scope.rows; y++) {
     //     for(int x = 0; x < image_scope.cols; x++) {
     //         // if(image_corrected.at<uchar>(y,x) == 255) {
-    //         //     // 白色点表示白线
+    //         //     // 白色点表示彩色边缘
     //         //     circle(image_scope, Point(x,y), 2, Scalar(255,255,255), -1);
     //         // }
     //         if(image_sideline_red.at<uchar>(y,x) == 255) {
@@ -418,7 +442,11 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     cv::Mat info_area = monitor_image(cv::Rect(0, 0, monitor_image.cols, 50));
     info_area.setTo(cv::Scalar(255, 255, 255));  // 清除之前的文本
     
-    std::string coordinates = cv::format("X: %.2f  Y: %.2f  Yaw: %.2f", counter_x, counter_y, counter_yaw);
+    std::string coordinates = cv::format(
+        "X: %.2fm  Y: %.2fm  Yaw: %.1f",
+        counter_x / pixelsPerMeterX(),
+        -counter_y / pixelsPerMeterY(),
+        -counter_yaw);
     cv::putText(monitor_image, coordinates, cv::Point(200, 30), 
                 cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 0), 2);
     
@@ -427,8 +455,10 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     cv::Point2f bottom_center(field_image.cols/2.0f, field_image.rows/2.0f+50);
     
     // 计算机器人在图像中的位置
-    float robot_x = bottom_center.x + counter_x * 1.0;
-    float robot_y = bottom_center.y + counter_y * 1.0;
+    float display_scale_x = static_cast<float>(field_image.cols) / image_lines_map.cols;
+    float display_scale_y = static_cast<float>(field_image.rows) / image_lines_map.rows;
+    float robot_x = bottom_center.x + counter_x * display_scale_x;
+    float robot_y = bottom_center.y + counter_y * display_scale_y;
     cv::Point robot_pos(robot_x, robot_y);
     
     // 绘制机器人主体（紫色填充的圆形，黑色轮廓）
@@ -456,8 +486,8 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 // 添加重定位回调函数
 void relocCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
 {
-    counter_x = msg->pose.position.x;
-    counter_y = msg->pose.position.y;
+    counter_x = msg->pose.position.x * pixelsPerMeterX();
+    counter_y = -msg->pose.position.y * pixelsPerMeterY();
     
     // 从四元数转换为欧拉角(yaw)
     double roll, pitch, yaw;
@@ -467,8 +497,24 @@ void relocCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
         msg->pose.orientation.z,
         msg->pose.orientation.w);
     tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-    counter_yaw = yaw * 180.0 / M_PI;  // 转换为角度
+    counter_yaw = -yaw * 180.0 / M_PI;  // 转换为图像坐标系角度
     ROS_WARN("重新定位: ( %.2f,  %.2f) yaw: %.2f", counter_x, counter_y, counter_yaw);
+}
+
+void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& msg)
+{
+    odom_x = msg->pose.pose.position.x;
+    odom_y = msg->pose.pose.position.y;
+
+    double roll, pitch, yaw;
+    tf2::Quaternion q(
+        msg->pose.pose.orientation.x,
+        msg->pose.pose.orientation.y,
+        msg->pose.pose.orientation.z,
+        msg->pose.pose.orientation.w);
+    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
+    odom_yaw = yaw * 180.0 / M_PI;
+    odom_ready = true;
 }
 
 int main(int argc, char** argv) {
@@ -518,6 +564,8 @@ int main(int argc, char** argv) {
     // 添加重定位话题订阅
     auto reloc_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(
         "/reloc_pose", 1, relocCallback);
+    auto odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(
+        "/odom", 10, odomCallback);
 
     rclcpp::spin(node);
     rclcpp::shutdown();

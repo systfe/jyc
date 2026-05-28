@@ -1,12 +1,17 @@
 <?xml version="1.0"?>
 <robot name="wpb_home_gazebo">
 
+<material name="robot_body_color">
+  <color rgba="0.0 0.45 0.55 1.0"/>
+</material>
+
 <link name="base_footprint">
   <visual>
     <origin xyz="0 0 0" rpy="0 0 0" />
     <geometry>
       <box size="0.05 0.05 0.001" />
     </geometry>
+    <material name="robot_body_color"/>
   </visual>
 </link>
 
@@ -22,6 +27,7 @@
    <geometry>
     <box size="0.01 0.01 0.001" />
    </geometry>
+   <material name="robot_body_color"/>
    <origin rpy = "0 0 0" xyz = "0 0 0"/>
   </visual>
 </link>
@@ -30,19 +36,20 @@
 <link name = "body_link">
   <visual>
     <geometry>
-      <mesh filename="package://robocon25_sim/meshes/robot.dae" scale="1 1 1"/>
+      <box size="0.18 0.18 0.08"/>
     </geometry>
-    <origin rpy = "0 0 3.1415926" xyz = "0.05 0 0"/>
+    <material name="robot_body_color"/>
+    <origin rpy = "0 0 0" xyz = "0 0 0.04"/>
   </visual>
   <collision>
-    <origin xyz="0 0 0" rpy="0 0 0" />
+    <origin xyz="0 0 0.04" rpy="0 0 0" />
     <geometry>
-      <cylinder length="0.13" radius="0.226"/>
+      <box size="0.18 0.18 0.08"/>
     </geometry>
   </collision>
   <inertial>
     <mass value="20"/>
-    <inertia ixx="4.00538" ixy="0.0" ixz="0.0" iyy="4.00538" iyz="0.0" izz="0.51076"/>
+    <inertia ixx="0.06467" ixy="0.0" ixz="0.0" iyy="0.06467" iyz="0.0" izz="0.10800"/>
   </inertial>
 </link>
 <joint name = "base_to_body" type = "fixed">
@@ -64,7 +71,7 @@
 <joint name="camera_height" type="fixed">
   <parent link="base_link"/>
   <child link="camera_link"/>
-  <origin xyz="0 0 0.8" rpy="0 1.57 0"/> 
+  <origin xyz="0 0 0.2" rpy="0 1.57 0"/> 
 </joint>
 
 <!-- Kinect -->
@@ -80,7 +87,7 @@
 <joint name="kinect_height" type="fixed">
   <parent link="base_link"/>
   <child link="kinect2_dock"/>
-  <origin xyz="0.145 -0.013 1.37" rpy="0 0 0"/> 
+  <origin xyz="0.05 -0.005 0.18" rpy="0 0 0"/> 
 </joint>
 
 <link name = "kinect2_head_frame">
@@ -172,7 +179,7 @@
     <update_rate>30</update_rate>
     <visualize>true</visualize>
     <camera name="head">
-      <horizontal_fov>2.90</horizontal_fov>
+      <horizontal_fov>3.02</horizontal_fov>
       <image>
         <width>640</width>
         <height>480</height>
@@ -194,6 +201,7 @@
 
 <!-- IMU plugin for 'body_link' -->
 <gazebo reference="body_link">
+  <material>Gazebo/Orange</material>
   <gravity>true</gravity>
   <sensor name="imu_sensor" type="imu">
     <always_on>true</always_on>

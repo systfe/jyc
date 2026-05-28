@@ -39,23 +39,19 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     Mat image_lines = Mat::zeros(image_raw.size(), CV_8UC1);
     Mat image_corrected = image_lines.clone();
 
-    // 1. HSV空间的白色检测
+    // 1. HSV空间的彩色区域检测。新场地是白底加彩色区域，不能再把白底当场线。
     Mat image_hsv;
     cv::cvtColor(image_raw, image_hsv, COLOR_BGR2HSV);
 
-    Mat mask_hsv;
-    inRange(image_hsv, Scalar(0, 0, 210), Scalar(180, 30, 255), mask_hsv); 
-
-    // 2. RGB空间的白色检测
-    Mat mask_rgb;
-    inRange(image_raw, Scalar(200, 200, 200), Scalar(255, 255, 255), mask_rgb);
-
-    Mat image_white = mask_hsv & mask_rgb;  // 使用与运算,要求同时满足两个条件
+    Mat image_white;
+    inRange(image_hsv, Scalar(0, 35, 30), Scalar(180, 255, 255), image_white);
+    morphologyEx(image_white, image_white, MORPH_OPEN,
+                 getStructuringElement(MORPH_RECT, Size(3, 3)));
 
     int center_x = image_hsv.cols / 2;
     int center_y = image_hsv.rows / 2;
 
-    // 用射线扫描白线图像
+    // 用射线扫描彩色边缘图像
     for (int angle = 0; angle < 360; angle += 4) {
         double rad = angle * CV_PI / 180.0;
         unsigned char last_pixel = 0;
@@ -65,9 +61,9 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
             
             // 别超出图像范围
             if (x >= 0 && x < image_white.cols && y >= 0 && y < image_white.rows) {
-                // 检测是否在白线边缘
+                // 检测是否在彩色区域边缘
                 unsigned char pixel = image_white.at<uchar>(y, x);
-                if (last_pixel == 255 && pixel != 255) 
+                if (length > 0 && last_pixel != pixel && (last_pixel == 255 || pixel == 255))
                 {
                     // 在 image_show 中画紫色十字
                     cv::line(image_show, Point(x - 5, y), Point(x + 5, y), Scalar(255, 0, 255), 1);
@@ -112,7 +108,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     // 计算纵向偏移量
     float y_offset = (image_lines_map.rows - rotated_image.rows) / 2.0f;
 
-    // 从旋转后的图像中提取白色点
+    // 从旋转后的图像中提取彩色边缘点
     std::vector<cv::Point2f> white_points;
     for(int y = 0; y < rotated_image.rows; y++) {
         for(int x = 0; x < rotated_image.cols; x++) {
@@ -139,7 +135,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
                 float rad = (angle + counter_yaw) * CV_PI / 180.0;
                 int sum = 0;
 
-                // 对每个白色点进行变换并检查匹配度
+                // 对每个彩色边缘点进行变换并检查匹配度
                 for(const auto& point : white_points) {
                     // 计算旋转后的点
                     float x = point.x - center.x;
@@ -207,8 +203,10 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     cv::Point2f bottom_center(field_image.cols/2.0f, field_image.rows/2.0f+50);
     
     // 计算机器人在图像中的位置
-    float robot_x = bottom_center.x + counter_x * 1.0;
-    float robot_y = bottom_center.y + counter_y * 1.0;
+    float display_scale_x = static_cast<float>(field_image.cols) / image_lines_map.cols;
+    float display_scale_y = static_cast<float>(field_image.rows) / image_lines_map.rows;
+    float robot_x = bottom_center.x + counter_x * display_scale_x;
+    float robot_y = bottom_center.y + counter_y * display_scale_y;
     cv::Point robot_pos(robot_x, robot_y);
     
     // 绘制机器人主体（紫色填充的圆形，黑色轮廓）

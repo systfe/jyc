@@ -38,7 +38,7 @@
   <!-- 启动 loc_sidelines 场线定位节点 -->
   <node name="loc_sidelines" pkg="robocon_localization" exec="loc_sidelines" output="screen">
     <param name= "table_file" value="$(find-pkg-share robocon_localization)/config/dist_table.txt" />
-    <param name= "lines_file" value="$(find-pkg-share robocon_localization)/config/field_lines.jpg" />
+    <param name= "lines_file" value="$(find-pkg-share robocon_localization)/config/field_lines.png" />
     <param name= "field_file" value="$(find-pkg-share robocon_localization)/config/field_bg.png" />
     <param name= "lines_map_file" value="$(find-pkg-share robocon_localization)/config/white_lines.png"/>
     <param name= "red_map_file" value="$(find-pkg-share robocon_localization)/config/red_lines.png"/>
@@ -48,7 +48,7 @@
   <!-- 启动 relocalization 重定位节点 -->
   <node name="relocalization" pkg="robocon_localization" exec="relocalization" output="screen">
     <param name= "table_file" value="$(find-pkg-share robocon_localization)/config/dist_table.txt" />
-    <param name= "lines_file" value="$(find-pkg-share robocon_localization)/config/field_lines.jpg" />
+    <param name= "lines_file" value="$(find-pkg-share robocon_localization)/config/field_lines.png" />
     <param name= "field_file" value="$(find-pkg-share robocon_localization)/config/field_bg.png" />
     <param name= "lines_map_file" value="$(find-pkg-share robocon_localization)/config/white_lines.png"/>
     <param name= "red_map_file" value="$(find-pkg-share robocon_localization)/config/red_lines.png"/>
