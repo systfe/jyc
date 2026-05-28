@@ -1,0 +1,45 @@
+<launch>
+
+  <!-- these are the arguments you can pass this launch file, for example paused:=true -->
+  <arg name="paused" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="gui" default="true"/>
+  <arg name="headless" default="false"/>
+  <arg name="debug" default="false"/> 
+  <arg name="verbose" default="false"/>
+
+  <!-- We resume the logic in empty_world.launch, changing only the name of the world to be launched -->
+  <include file="$(find-pkg-share robocon25_sim)/launch/gazebo_no_eol.launch.py">
+    <arg name="world" value="$(find-pkg-share robocon25_sim)/worlds/robocon25.world"/>
+    <arg name="verbose" value="$(var verbose)"/>
+    <arg name="paused" value="$(var paused)"/>
+    <arg name="gui" value="$(var gui)"/>
+  </include>
+  
+  <!-- Spawn a robot into Gazebo -->
+  <node name="spawn_urdf" pkg="gazebo_ros" exec="spawn_entity.py" args="-file $(find-pkg-share robocon25_sim)/models/robot.model -entity robot" />
+
+  <!-- 红球放置位置 -->
+  <arg name="red_ball_x" default="1.0"/>
+  <node name="red_ball" pkg="gazebo_ros" exec="spawn_entity.py" args="-file $(find-pkg-share robocon25_sim)/models/red_ball.model -x $(var red_ball_x) -entity red_ball" />
+
+  <node name="omni_mirror_sim" pkg="robocon_localization" exec="omni_mirror_sim" output="screen">
+    <param name="input_topic" value="/sim_camera/image_raw"/>
+    <param name="output_topic" value="/omni_camera/image_raw"/>
+    <param name="output_width" value="640"/>
+    <param name="output_height" value="480"/>
+    <param name="inner_radius_ratio" value="0.00"/>
+    <param name="outer_radius_ratio" value="0.98"/>
+    <param name="mirror_curve" value="2.12"/>
+    <param name="source_radius_ratio" value="0.98"/>
+    <param name="radial_k1" value="0.00"/>
+    <param name="radial_k2" value="0.00"/>
+    <param name="center_x_ratio" value="0.50"/>
+    <param name="center_y_ratio" value="0.50"/>
+    <param name="flip_radial" value="false"/>
+  </node>
+
+  <!-- 启动距离标定节点 -->
+  <node name="calibrate_dist" pkg="robocon_localization" exec="calibrate_dist" output="screen"/>
+
+</launch>

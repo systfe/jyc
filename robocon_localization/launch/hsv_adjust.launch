@@ -1,0 +1,30 @@
+<launch>
+
+  <!-- these are the arguments you can pass this launch file, for example paused:=true -->
+  <arg name="paused" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="gui" default="true"/>
+  <arg name="headless" default="false"/>
+  <arg name="debug" default="false"/> 
+  <arg name="verbose" default="false"/>
+
+  <!-- We resume the logic in empty_world.launch, changing only the name of the world to be launched -->
+  <include file="$(find-pkg-share robocon25_sim)/launch/gazebo_no_eol.launch.py">
+    <arg name="world" value="$(find-pkg-share robocon25_sim)/worlds/robocon25.world"/>
+    <arg name="verbose" value="$(var verbose)"/>
+    <arg name="paused" value="$(var paused)"/>
+    <arg name="gui" value="$(var gui)"/>
+  </include>
+  
+  <!-- Spawn a robot into Gazebo -->
+  <node name="spawn_urdf" pkg="gazebo_ros" exec="spawn_entity.py" args="-file $(find-pkg-share robocon25_sim)/models/robot.model -entity robot" />
+
+  <node name="omni_mirror_sim" pkg="robocon_localization" exec="omni_mirror_sim" output="screen">
+    <param name="input_topic" value="/sim_camera/image_raw"/>
+    <param name="output_topic" value="/omni_camera/image_raw"/>
+  </node>
+
+  <node name="hsv_adjust" pkg="robocon_localization" exec="hsv_adjust" output="screen"/>
+
+</launch>
+
