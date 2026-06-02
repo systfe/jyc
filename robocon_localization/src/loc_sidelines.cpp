@@ -3,9 +3,9 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
+#include <algorithm>
 #include <array>
 #include <cmath>
-#include <limits>
 #include <nav_msgs/msg/odometry.hpp>
 #include "distance_lookup.h"
 #include "lines_map.h"
@@ -40,6 +40,9 @@ static cv::Mat image_lines_all;
 static cv::Mat image_lines_map;
 static cv::Mat image_red_map;
 static cv::Mat image_blue_map;
+static cv::Mat image_magenta_map;
+static cv::Mat image_purple_map;
+static cv::Mat image_black_map;
 static constexpr float FIELD_SIZE_METERS = 3.0f;
 
 static float pixelsPerMeterX()
@@ -50,6 +53,147 @@ static float pixelsPerMeterX()
 static float pixelsPerMeterY()
 {
     return image_lines_map.empty() ? 1.0f : image_lines_map.rows / FIELD_SIZE_METERS;
+}
+
+static float maxPoseX()
+{
+    return image_lines_map.empty() ? 0.0f : image_lines_map.cols / 2.0f;
+}
+
+static float maxPoseY()
+{
+    return image_lines_map.empty() ? 0.0f : image_lines_map.rows / 2.0f;
+}
+
+static bool isPoseInsideField(float pose_x, float pose_y)
+{
+    if (image_lines_map.empty()) {
+        return true;
+    }
+
+    return pose_x >= -maxPoseX() && pose_x <= maxPoseX() &&
+           pose_y >= -maxPoseY() && pose_y <= maxPoseY();
+}
+
+static void clampPoseInsideField(float& pose_x, float& pose_y)
+{
+    if (image_lines_map.empty()) {
+        return;
+    }
+
+    pose_x = std::clamp(pose_x, -maxPoseX(), maxPoseX());
+    pose_y = std::clamp(pose_y, -maxPoseY(), maxPoseY());
+}
+
+static float normalizeAngleDeg(float angle)
+{
+    while (angle > 180.0f) {
+        angle -= 360.0f;
+    }
+    while (angle < -180.0f) {
+        angle += 360.0f;
+    }
+    return angle;
+}
+
+static cv::Mat createDirectionalGradientFromMask(const cv::Mat& mask, int innerRadius, int outerRadius)
+{
+    (void)innerRadius;
+    cv::Mat binary_mask;
+    cv::threshold(mask, binary_mask, 0, 255, cv::THRESH_BINARY);
+
+    cv::Mat inverted_mask;
+    cv::bitwise_not(binary_mask, inverted_mask);
+
+    cv::Mat outside_distances;
+    cv::distanceTransform(inverted_mask, outside_distances, cv::DIST_L2, 3);
+
+    cv::Mat gradient = cv::Mat::zeros(mask.size(), CV_8UC1);
+    for (int y = 0; y < gradient.rows; ++y) {
+        for (int x = 0; x < gradient.cols; ++x) {
+            if (binary_mask.at<uchar>(y, x) > 0) {
+                gradient.at<uchar>(y, x) = 255;
+                continue;
+            }
+
+            if (outerRadius <= 0) {
+                continue;
+            }
+
+            const float distance = outside_distances.at<float>(y, x);
+            if (distance <= outerRadius) {
+                gradient.at<uchar>(y, x) =
+                    cv::saturate_cast<uchar>(255.0f * (1.0f - distance / outerRadius));
+            }
+        }
+    }
+
+    return gradient;
+}
+
+static cv::Mat createMagentaMap(const cv::Mat& lines_image)
+{
+    if (lines_image.empty()) {
+        return cv::Mat();
+    }
+
+    cv::Mat hsv;
+    cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
+
+    cv::Mat magenta_mask;
+    cv::inRange(hsv, cv::Scalar(130, 45, 60), cv::Scalar(170, 255, 255), magenta_mask);
+    cv::morphologyEx(
+        magenta_mask,
+        magenta_mask,
+        cv::MORPH_OPEN,
+        cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)));
+
+    const int innerRadius = std::max(6, std::max(lines_image.cols, lines_image.rows) / 100);
+    const int outerRadius = std::max(18, std::max(lines_image.cols, lines_image.rows) / 35);
+    return createDirectionalGradientFromMask(magenta_mask, innerRadius, outerRadius);
+}
+
+static cv::Mat createPurpleMap(const cv::Mat& lines_image)
+{
+    if (lines_image.empty()) {
+        return cv::Mat();
+    }
+
+    cv::Mat hsv;
+    cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
+
+    cv::Mat purple_mask;
+    cv::inRange(hsv, cv::Scalar(100, 100, 40), cv::Scalar(120, 255, 170), purple_mask);
+    cv::morphologyEx(
+        purple_mask,
+        purple_mask,
+        cv::MORPH_OPEN,
+        cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)));
+
+    const int innerRadius = std::max(6, std::max(lines_image.cols, lines_image.rows) / 100);
+    const int outerRadius = std::max(18, std::max(lines_image.cols, lines_image.rows) / 35);
+    return createDirectionalGradientFromMask(purple_mask, innerRadius, outerRadius);
+}
+
+static cv::Mat createBlackMap(const cv::Mat& lines_image)
+{
+    if (lines_image.empty()) {
+        return cv::Mat();
+    }
+
+    cv::Mat hsv;
+    cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
+
+    cv::Mat black_mask;
+    cv::inRange(hsv, cv::Scalar(0, 0, 0), cv::Scalar(180, 80, 55), black_mask);
+    cv::morphologyEx(
+        black_mask,
+        black_mask,
+        cv::MORPH_OPEN,
+        cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)));
+
+    const int radius = std::max(14, std::max(lines_image.cols, lines_image.rows) / 45);
+    return createDirectionalGradientFromMask(black_mask, radius, radius);
 }
 
 static void syncPoseFromOdom()
@@ -114,20 +258,93 @@ static int scorePointsOnMap(const std::vector<cv::Point2f>& points,
     return score;
 }
 
+enum class MatchFocus {
+    Position,
+    Yaw,
+    Initial,
+};
+
 static int scorePose(const std::vector<cv::Point2f>& white_points,
+                     const std::vector<cv::Point2f>& magenta_points,
+                     const std::vector<cv::Point2f>& purple_points,
+                     const std::vector<cv::Point2f>& black_points,
                      const std::vector<cv::Point2f>& red_points,
                      const std::vector<cv::Point2f>& blue_points,
                      const cv::Point2f& center,
                      float pose_x,
                      float pose_y,
-                     float pose_yaw)
+                     float pose_yaw,
+                     MatchFocus focus)
 {
-    return scorePointsOnMap(white_points, image_lines_map, center, pose_x, pose_y, pose_yaw) +
-           scorePointsOnMap(red_points, image_red_map, center, pose_x, pose_y, pose_yaw) +
-           scorePointsOnMap(blue_points, image_blue_map, center, pose_x, pose_y, pose_yaw);
+    (void)white_points;
+    if (!isPoseInsideField(pose_x, pose_y)) {
+        return -1;
+    }
+
+    const int magenta_score =
+        scorePointsOnMap(magenta_points, image_magenta_map, center, pose_x, pose_y, pose_yaw);
+    const int purple_score =
+        scorePointsOnMap(purple_points, image_purple_map, center, pose_x, pose_y, pose_yaw);
+    const int black_score =
+        scorePointsOnMap(black_points, image_black_map, center, pose_x, pose_y, pose_yaw);
+    const int color_side_score =
+        scorePointsOnMap(red_points, image_red_map, center, pose_x, pose_y, pose_yaw) +
+        scorePointsOnMap(blue_points, image_blue_map, center, pose_x, pose_y, pose_yaw);
+
+    switch (focus) {
+    case MatchFocus::Position:
+        // 位置主要靠洋红；紫色辅助位置，红蓝只弱消歧。
+        return magenta_score * 24 + purple_score * 6 + black_score * 2 + color_side_score;
+    case MatchFocus::Yaw:
+        // 朝向直线主要靠紫色和安全区中线黑杠；红蓝用于判定正反方向，洋红弱约束位置。
+        return magenta_score * 2 + purple_score * 16 + black_score * 14 + color_side_score * 10;
+    case MatchFocus::Initial:
+        // 开局四候选综合判断：洋红定位置，紫色/黑杠定方向线，红蓝定正负方向。
+        return magenta_score * 20 + purple_score * 12 + black_score * 10 + color_side_score * 8;
+    }
+
+    return -1;
+}
+
+static void refineYawWithSidelinePoints(const std::vector<cv::Point2f>& red_points,
+                                        const std::vector<cv::Point2f>& blue_points,
+                                        const cv::Point2f& center,
+                                        float pose_x,
+                                        float pose_y,
+                                        float& pose_yaw)
+{
+    if (red_points.empty() && blue_points.empty()) {
+        return;
+    }
+
+    int last_sum = 0;
+    for (int i = 0; i < 20; ++i) {
+        int best_sum = 0;
+        float best_angle = 0.0f;
+        for (float angle = -1.0f; angle <= 1.0f; angle += 1.0f) {
+            const float test_yaw = pose_yaw + angle;
+            const int sum =
+                scorePointsOnMap(red_points, image_red_map, center, pose_x, pose_y, test_yaw) +
+                scorePointsOnMap(blue_points, image_blue_map, center, pose_x, pose_y, test_yaw);
+            if (sum > best_sum) {
+                best_sum = sum;
+                best_angle = angle;
+            }
+        }
+
+        if (best_sum <= last_sum || best_angle == 0.0f) {
+            break;
+        }
+
+        pose_yaw += best_angle;
+        last_sum = best_sum;
+    }
 }
 
 static void refinePoseWithDetectedPoints(const std::vector<cv::Point2f>& white_points,
+                                         const std::vector<cv::Point2f>& magenta_points,
+                                         const std::vector<cv::Point2f>& purple_points,
+                                         const std::vector<cv::Point2f>& black_points,
                                          const std::vector<cv::Point2f>& red_points,
                                          const std::vector<cv::Point2f>& blue_points,
                                          const cv::Point2f& center,
@@ -135,46 +352,179 @@ static void refinePoseWithDetectedPoints(const std::vector<cv::Point2f>& white_p
                                          float& pose_y,
                                          float& pose_yaw)
 {
-    if (!red_points.empty() && !blue_points.empty()) {
-        int last_sum = 0;
-        for (int i = 0; i < 60; ++i) {
-            MatchResult match_result = LinesMatcher::findMatch(
-                red_points, blue_points, image_red_map, image_blue_map,
-                center, pose_x, pose_y, pose_yaw);
+    refineYawWithSidelinePoints(red_points, blue_points, center, pose_x, pose_y, pose_yaw);
 
-            if (match_result.max_sum <= last_sum) {
+    if (!magenta_points.empty()) {
+        int last_sum = 0;
+        for (int i = 0; i < 40; ++i) {
+            MatchResult magenta_match = LinesMatcher::refineMatchWithWhitePoints(
+                magenta_points, image_magenta_map, center, pose_x, pose_y, pose_yaw);
+
+            if (magenta_match.max_sum <= last_sum) {
                 break;
             }
 
-            pose_x += match_result.best_dx;
-            pose_y += match_result.best_dy;
-            pose_yaw += match_result.best_angle;
-            last_sum = match_result.max_sum;
+            pose_x += magenta_match.best_dx;
+            pose_y += magenta_match.best_dy;
+            clampPoseInsideField(pose_x, pose_y);
+            pose_yaw += magenta_match.best_angle;
+            last_sum = magenta_match.max_sum;
         }
     }
 
-    if (!white_points.empty()) {
+    if (!purple_points.empty()) {
         int last_sum = 0;
-        for (int i = 0; i < 60; ++i) {
-            MatchResult white_match = LinesMatcher::refineMatchWithWhitePoints(
-                white_points, image_lines_map, center, pose_x, pose_y, pose_yaw);
+        for (int i = 0; i < 40; ++i) {
+            MatchResult purple_match = LinesMatcher::refineMatchWithWhitePoints(
+                purple_points, image_purple_map, center, pose_x, pose_y, pose_yaw);
 
-            if (white_match.max_sum <= last_sum) {
+            if (purple_match.max_sum <= last_sum) {
                 break;
             }
 
-            pose_x += white_match.best_dx;
-            pose_y += white_match.best_dy;
-            pose_yaw += white_match.best_angle;
-            last_sum = white_match.max_sum;
+            pose_x += purple_match.best_dx;
+            pose_y += purple_match.best_dy;
+            clampPoseInsideField(pose_x, pose_y);
+            pose_yaw += purple_match.best_angle;
+            last_sum = purple_match.max_sum;
         }
     }
+
+    if (!black_points.empty()) {
+        int last_sum = 0;
+        for (int i = 0; i < 30; ++i) {
+            MatchResult black_match = LinesMatcher::refineMatchWithWhitePoints(
+                black_points, image_black_map, center, pose_x, pose_y, pose_yaw);
+
+            if (black_match.max_sum <= last_sum) {
+                break;
+            }
+
+            pose_x += black_match.best_dx;
+            pose_y += black_match.best_dy;
+            clampPoseInsideField(pose_x, pose_y);
+            pose_yaw += black_match.best_angle;
+            last_sum = black_match.max_sum;
+        }
+    }
+
+    (void)white_points;
+}
+
+static void searchPoseWithWhitePoints(const std::vector<cv::Point2f>& white_points,
+                                     const std::vector<cv::Point2f>& magenta_points,
+                                     const std::vector<cv::Point2f>& purple_points,
+                                     const std::vector<cv::Point2f>& black_points,
+                                     const std::vector<cv::Point2f>& red_points,
+                                      const std::vector<cv::Point2f>& blue_points,
+                                      const cv::Point2f& center,
+                                      int position_range,
+                                      int position_step,
+                                      int angle_range,
+                                      int angle_step,
+                                      MatchFocus focus,
+                                      float& pose_x,
+                                      float& pose_y,
+                                      float& pose_yaw)
+{
+    if (magenta_points.empty() && purple_points.empty()) {
+        return;
+    }
+
+    clampPoseInsideField(pose_x, pose_y);
+
+    int best_score = scorePose(
+        white_points, magenta_points, purple_points, black_points, red_points, blue_points,
+        center, pose_x, pose_y, pose_yaw, focus);
+    float best_x = pose_x;
+    float best_y = pose_y;
+    float best_yaw = pose_yaw;
+
+    for (int dx = -position_range; dx <= position_range; dx += position_step) {
+        for (int dy = -position_range; dy <= position_range; dy += position_step) {
+            for (int angle = -angle_range; angle <= angle_range; angle += angle_step) {
+                const float test_x = pose_x + dx;
+                const float test_y = pose_y + dy;
+                if (!isPoseInsideField(test_x, test_y)) {
+                    continue;
+                }
+                const float test_yaw = pose_yaw + angle;
+                const int score = scorePose(
+                    white_points, magenta_points, purple_points, black_points, red_points, blue_points,
+                    center, test_x, test_y, test_yaw, focus);
+
+                if (score > best_score) {
+                    best_score = score;
+                    best_x = test_x;
+                    best_y = test_y;
+                    best_yaw = test_yaw;
+                }
+            }
+        }
+    }
+
+    pose_x = best_x;
+    pose_y = best_y;
+    pose_yaw = best_yaw;
+}
+
+static void trackPoseWithDetectedPoints(const std::vector<cv::Point2f>& white_points,
+                                        const std::vector<cv::Point2f>& magenta_points,
+                                        const std::vector<cv::Point2f>& purple_points,
+                                        const std::vector<cv::Point2f>& black_points,
+                                        const std::vector<cv::Point2f>& red_points,
+                                        const std::vector<cv::Point2f>& blue_points,
+                                        const cv::Point2f& center,
+                                        float& pose_x,
+                                        float& pose_y,
+                                        float& pose_yaw)
+{
+    const float previous_x = pose_x;
+    const float previous_y = pose_y;
+    const float previous_yaw = pose_yaw;
+
+    // 匹配分三类目标：
+    // Position: 洋红主导 x/y，紫色辅助，红蓝弱消歧。
+    // Yaw: 紫色主导朝向直线，红蓝确定正负方向，洋红弱约束位置。
+    // Initial: 开局四候选综合判断。
+    searchPoseWithWhitePoints(white_points, magenta_points, purple_points, black_points, red_points, blue_points, center,
+                              0, 1, 70, 2, MatchFocus::Yaw, pose_x, pose_y, pose_yaw);
+    refineYawWithSidelinePoints(red_points, blue_points, center, pose_x, pose_y, pose_yaw);
+
+    const float yaw_jump = std::abs(normalizeAngleDeg(pose_yaw - previous_yaw));
+    if (yaw_jump > 14.0f) {
+        // 快速旋转帧只更新朝向，避免变形特征把位置吸到安全区斜边。
+        pose_x = previous_x;
+        pose_y = previous_y;
+        searchPoseWithWhitePoints(white_points, magenta_points, purple_points, black_points, red_points, blue_points, center,
+                                  0, 1, 12, 1, MatchFocus::Yaw, pose_x, pose_y, pose_yaw);
+    } else {
+        searchPoseWithWhitePoints(white_points, magenta_points, purple_points, black_points, red_points, blue_points, center,
+                                  72, 6, 16, 2, MatchFocus::Position, pose_x, pose_y, pose_yaw);
+        searchPoseWithWhitePoints(white_points, magenta_points, purple_points, black_points, red_points, blue_points, center,
+                                  18, 2, 6, 1, MatchFocus::Position, pose_x, pose_y, pose_yaw);
+        refinePoseWithDetectedPoints(white_points, magenta_points, purple_points, black_points, red_points, blue_points, center,
+                                     pose_x, pose_y, pose_yaw);
+
+        const float max_position_jump = pixelsPerMeterX() * 0.32f;
+        const float jump = std::hypot(pose_x - previous_x, pose_y - previous_y);
+        if (jump > max_position_jump) {
+            pose_x = previous_x;
+            pose_y = previous_y;
+            pose_yaw = previous_yaw;
+            searchPoseWithWhitePoints(white_points, magenta_points, purple_points, black_points, red_points, blue_points, center,
+                                      0, 1, 24, 2, MatchFocus::Yaw, pose_x, pose_y, pose_yaw);
+        }
+    }
+
+    clampPoseInsideField(pose_x, pose_y);
 }
 
 static void setVisualInitialPose(float pose_x, float pose_y, float pose_yaw)
 {
     initial_counter_x = pose_x;
     initial_counter_y = pose_y;
+    clampPoseInsideField(initial_counter_x, initial_counter_y);
     initial_counter_yaw = pose_yaw;
 
     if (odom_ready) {
@@ -194,6 +544,9 @@ static void setVisualInitialPose(float pose_x, float pose_y, float pose_yaw)
 }
 
 static bool tryInitialVisualLocalization(const std::vector<cv::Point2f>& white_points,
+                                         const std::vector<cv::Point2f>& magenta_points,
+                                         const std::vector<cv::Point2f>& purple_points,
+                                         const std::vector<cv::Point2f>& black_points,
                                          const std::vector<cv::Point2f>& red_points,
                                          const std::vector<cv::Point2f>& blue_points,
                                          const cv::Point2f& center)
@@ -202,8 +555,7 @@ static bool tryInitialVisualLocalization(const std::vector<cv::Point2f>& white_p
         return false;
     }
 
-    const size_t total_points = white_points.size() + red_points.size() + blue_points.size();
-    if (total_points < 4) {
+    if (magenta_points.size() < 4) {
         return false;
     }
 
@@ -238,11 +590,11 @@ static bool tryInitialVisualLocalization(const std::vector<cv::Point2f>& white_p
         float pose_y = -start_pose.world_y * pixelsPerMeterY();
         float pose_yaw = -start_pose.world_yaw;
 
-        refinePoseWithDetectedPoints(white_points, red_points, blue_points, center,
+        refinePoseWithDetectedPoints(white_points, magenta_points, purple_points, black_points, red_points, blue_points, center,
                                      pose_x, pose_y, pose_yaw);
 
-        const int score = scorePose(white_points, red_points, blue_points,
-                                    center, pose_x, pose_y, pose_yaw);
+        const int score = scorePose(white_points, magenta_points, purple_points, black_points, red_points, blue_points,
+                                    center, pose_x, pose_y, pose_yaw, MatchFocus::Initial);
         if (score > best_score) {
             best_score = score;
             best_name = start_pose.name;
@@ -293,6 +645,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     Mat image_corrected = image_lines.clone();
     Mat image_red = Mat::zeros(image_raw.size(), CV_8UC1);
     Mat image_blue = Mat::zeros(image_raw.size(), CV_8UC1);
+    Mat image_black = Mat::zeros(image_raw.size(), CV_8UC1);
     Mat image_sideline_red = image_lines.clone();
     Mat image_sideline_blue = image_lines.clone();
 
@@ -302,28 +655,37 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
     Mat mask_red1, mask_red2;
     // 场地图红色 RGB(250,74,59)，OpenCV HSV 约为 (2,195,250)。
-    inRange(image_hsv, Scalar(0, 80, 80), Scalar(12, 255, 255), mask_red1);
-    inRange(image_hsv, Scalar(170, 80, 80), Scalar(180, 255, 255), mask_red2);
-    image_red = mask_red1 | mask_red2;  // 合并两个红色范围
+    inRange(image_hsv, Scalar(0, 120, 150), Scalar(8, 255, 255), mask_red1);
+    image_red = mask_red1;
 
     // 场地图浅蓝 RGB(92,169,221)，OpenCV HSV 约为 (102,149,221)。
     // 深色紫/蓝边 Hue 接近但更暗且饱和度更高，所以用亮度和饱和度排除它。
     inRange(image_hsv, Scalar(96, 70, 170), Scalar(110, 200, 255), image_blue);
+    inRange(image_hsv, Scalar(0, 0, 0), Scalar(180, 80, 55), image_black);
 
     // 场地图洋红 RGB(255,25,255)，OpenCV HSV 约为 (150,230,255)。
-    Mat image_magenta;
+    // 紫色轮廓在贴图中是低亮度高饱和的深蓝紫，例如 RGB(0,61,129)。
+    Mat image_magenta, image_purple;
     inRange(image_hsv, Scalar(130, 45, 60), Scalar(170, 255, 255), image_magenta);
+    inRange(image_hsv, Scalar(100, 100, 40), Scalar(120, 255, 170), image_purple);
 
-    Mat image_white = image_magenta;
+    Mat image_white = image_magenta | image_purple;
     morphologyEx(image_white, image_white, MORPH_OPEN,
+                 getStructuringElement(MORPH_RECT, Size(3, 3)));
+    morphologyEx(image_magenta, image_magenta, MORPH_OPEN,
+                 getStructuringElement(MORPH_RECT, Size(3, 3)));
+    morphologyEx(image_purple, image_purple, MORPH_OPEN,
                  getStructuringElement(MORPH_RECT, Size(3, 3)));
 
     int center_x = image_hsv.cols / 2;
     int center_y = image_hsv.rows / 2;
     const int self_mask_radius = std::min(image_hsv.cols, image_hsv.rows) / 8;
     circle(image_white, Point(center_x, center_y), self_mask_radius, Scalar(0), -1);
+    circle(image_magenta, Point(center_x, center_y), self_mask_radius, Scalar(0), -1);
+    circle(image_purple, Point(center_x, center_y), self_mask_radius, Scalar(0), -1);
     circle(image_red, Point(center_x, center_y), self_mask_radius, Scalar(0), -1);
     circle(image_blue, Point(center_x, center_y), self_mask_radius, Scalar(0), -1);
+    circle(image_black, Point(center_x, center_y), self_mask_radius, Scalar(0), -1);
     const double min_feature_distance = 0.25;
     const double max_feature_distance = 4.50;
     const double rotated_cols = image_corrected.rows;
@@ -335,6 +697,9 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     const double map_pixels_per_meter = pixelsPerMeterX() * projection_scale_correction;
     cv::Point2f map_center(image_lines_map.cols / 2.0f, image_lines_map.rows / 2.0f);
     std::vector<cv::Point2f> projected_white_points;
+    std::vector<cv::Point2f> projected_magenta_points;
+    std::vector<cv::Point2f> projected_purple_points;
+    std::vector<cv::Point2f> projected_black_points;
     std::vector<cv::Point2f> projected_red_points;
     std::vector<cv::Point2f> projected_blue_points;
     auto addProjectedPoint = [&](std::vector<cv::Point2f>& points, double distance_m, double rad) {
@@ -351,6 +716,9 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     for (int angle = 0; angle < 360; angle += 4) {
         double rad = angle * CV_PI / 180.0;
         unsigned char last_pixel_white = 0;
+        unsigned char last_pixel_magenta = 0;
+        unsigned char last_pixel_purple = 0;
+        unsigned char last_pixel_black = 0;
         unsigned char last_pixel_red = 0;
         unsigned char last_pixel_blue = 0;
         
@@ -382,6 +750,42 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
                     }
                 }
                 last_pixel_white = pixel_white;
+
+                unsigned char pixel_magenta = image_magenta.at<uchar>(y, x);
+                if (length > 0 && last_pixel_magenta != pixel_magenta &&
+                    (last_pixel_magenta == 255 || pixel_magenta == 255))
+                {
+                    double distance_m = distanceLookup.getDistance(length);
+                    if(distance_m > min_feature_distance && distance_m < max_feature_distance)
+                    {
+                        addProjectedPoint(projected_magenta_points, distance_m, rad);
+                    }
+                }
+                last_pixel_magenta = pixel_magenta;
+
+                unsigned char pixel_purple = image_purple.at<uchar>(y, x);
+                if (length > 0 && last_pixel_purple != pixel_purple &&
+                    (last_pixel_purple == 255 || pixel_purple == 255))
+                {
+                    double distance_m = distanceLookup.getDistance(length);
+                    if(distance_m > min_feature_distance && distance_m < max_feature_distance)
+                    {
+                        addProjectedPoint(projected_purple_points, distance_m, rad);
+                    }
+                }
+                last_pixel_purple = pixel_purple;
+
+                unsigned char pixel_black = image_black.at<uchar>(y, x);
+                if (length > 0 && last_pixel_black != pixel_black &&
+                    (last_pixel_black == 255 || pixel_black == 255))
+                {
+                    double distance_m = distanceLookup.getDistance(length);
+                    if(distance_m > min_feature_distance && distance_m < max_feature_distance)
+                    {
+                        addProjectedPoint(projected_black_points, distance_m, rad);
+                    }
+                }
+                last_pixel_black = pixel_black;
 
                 // 检测红线边缘
                 unsigned char pixel_red = image_red.at<uchar>(y, x);
@@ -441,150 +845,56 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     
     // 从原始射线检测结果直接投影到地图坐标，避免中间图像尺寸裁剪远距离特征。
     std::vector<cv::Point2f> white_points = projected_white_points;
+    std::vector<cv::Point2f> magenta_points = projected_magenta_points;
+    std::vector<cv::Point2f> purple_points = projected_purple_points;
+    std::vector<cv::Point2f> black_points = projected_black_points;
     std::vector<cv::Point2f> red_points = projected_red_points;
     std::vector<cv::Point2f> blue_points = projected_blue_points;
-
-    // 用于计算平均位置的变量
-    cv::Point2f red_avg(0.0f, 0.0f);
-    cv::Point2f blue_avg(0.0f, 0.0f);
-
-    // 旋转红线和蓝线图像
-    cv::Mat rotated_red, rotated_blue;
-    cv::rotate(image_sideline_red, rotated_red, cv::ROTATE_90_CLOCKWISE);
-    cv::rotate(image_sideline_blue, rotated_blue, cv::ROTATE_90_CLOCKWISE);
 
     static int debug_frame_count = 0;
     if (++debug_frame_count % 30 == 0) {
         printf(
-            "detected points before match: white=%zu red=%zu blue=%zu\n",
+            "detected points before match: white=%zu magenta=%zu purple=%zu black=%zu red=%zu blue=%zu\n",
             white_points.size(),
+            magenta_points.size(),
+            purple_points.size(),
+            black_points.size(),
             red_points.size(),
             blue_points.size());
     }
 
     cv::Point2f center = map_center;
     if (!vision_initialized) {
-        tryInitialVisualLocalization(white_points, red_points, blue_points, center);
+        tryInitialVisualLocalization(
+            white_points, magenta_points, purple_points, black_points, red_points, blue_points, center);
     } else if (!use_odom_for_tracking) {
-        refinePoseWithDetectedPoints(white_points, red_points, blue_points, center,
-                                     counter_x, counter_y, counter_yaw);
+        trackPoseWithDetectedPoints(white_points, magenta_points, purple_points, black_points, red_points, blue_points, center,
+                                    counter_x, counter_y, counter_yaw);
     }
     syncPoseFromOdom();
 
-    // [1]先使用红蓝边线进行初次匹配
-    const bool has_sidelines = !red_points.empty() && !blue_points.empty();
-    if (has_sidelines && !vision_initialized) {
-        red_avg = LinesMatcher::calculateLinePointsAverage(red_points, image_lines_map.size());
-        blue_avg = LinesMatcher::calculateLinePointsAverage(blue_points, image_lines_map.size());
-        
-        // 计算从red_avg指向blue_avg的角度
-        float dx = blue_avg.x - red_avg.x;
-        float dy = blue_avg.y - red_avg.y;
-        float angle = atan2(dy, dx) * 180 / CV_PI;
-        
-        // 计算红点和蓝点的连线的中心点坐标
-        cv::Point2f line_center((red_avg.x + blue_avg.x) / 2, (red_avg.y + blue_avg.y) / 2);
-        counter_yaw = -90 - angle;
-    }
-    
-    if (has_sidelines && !vision_initialized) {
-        int last_max_sum = 0;
-        while (true) {
-            MatchResult match_result = LinesMatcher::findMatch(red_points, blue_points, 
-                                                                image_red_map, image_blue_map,
-                                                                center, counter_x, counter_y, counter_yaw);
-            
-            // 如果本次匹配结果没有改善，则退出循环
-            if (match_result.max_sum <= last_max_sum) {
-                break;
-            }
-            
-            // 更新计数器和上一次的最大匹配值
-            counter_x += match_result.best_dx;
-            counter_y += match_result.best_dy;
-            counter_yaw += match_result.best_angle;
-            last_max_sum = match_result.max_sum;
-        }
+    // 红/蓝安全区只用于辅助朝向，不参与位置匹配。
+    if (!vision_initialized) {
+        refineYawWithSidelinePoints(red_points, blue_points, center, counter_x, counter_y, counter_yaw);
     }
     
     float rad = (counter_yaw) * CV_PI / 180.0;
-    
-    if (has_sidelines && !vision_initialized) {
-        // 初始化范围统计变量
-        float min_x = std::numeric_limits<float>::max();
-        float max_x = std::numeric_limits<float>::lowest();
-        float min_y = std::numeric_limits<float>::max();
-        float max_y = std::numeric_limits<float>::lowest();
 
-        // 先统计红点范围
-        for(const auto& point : red_points) {
-            float x = point.x - center.x;
-            float y = point.y - center.y;
-            float rotated_x = x * cos(rad) - y * sin(rad) + center.x + counter_x;
-            float rotated_y = x * sin(rad) + y * cos(rad) + center.y + counter_y;
-            
-            min_x = std::min(min_x, rotated_x);
-            max_x = std::max(max_x, rotated_x);
-            min_y = std::min(min_y, rotated_y);
-            max_y = std::max(max_y, rotated_y);
-        }
-
-        // 再加上统计蓝点范围
-        for(const auto& point : blue_points) {
-            float x = point.x - center.x;
-            float y = point.y - center.y;
-            float rotated_x = x * cos(rad) - y * sin(rad) + center.x + counter_x;
-            float rotated_y = x * sin(rad) + y * cos(rad) + center.y + counter_y;
-            
-            min_x = std::min(min_x, rotated_x);
-            max_x = std::max(max_x, rotated_x);
-            min_y = std::min(min_y, rotated_y);
-            max_y = std::max(max_y, rotated_y);
-        }
-
-        // 利用红蓝边界，剔除边界外的白点
-        std::vector<cv::Point2f> filtered_white_points;
-        for(const auto& point : white_points) {
-            float x = point.x - center.x;
-            float y = point.y - center.y;
-            float rotated_x = x * cos(rad) - y * sin(rad) + center.x + counter_x;
-            float rotated_y = x * sin(rad) + y * cos(rad) + center.y + counter_y;
-            
-            // 只保留在范围内的点
-            if (rotated_x >= min_x && rotated_x <= max_x && 
-                rotated_y >= min_y && rotated_y <= max_y) {
-                filtered_white_points.push_back(point);
-            }
-        }
-        // 用过滤后的点替换原来的white_points
-        white_points = filtered_white_points;
-    }
-
-    // [2] 使用白点进行场线匹配
+    // 使用洋红出发区优先、绿色混合点辅助的位置匹配。
     if (!vision_initialized) {
-        int last_white_sum = 0;
-        while (true) {
-            MatchResult white_match = LinesMatcher::refineMatchWithWhitePoints(
-                white_points,
-                image_lines_map,
-                center,
-                counter_x,
-                counter_y,
-                counter_yaw
-            );
-            
-            // 如果本次匹配结果没有改善，则退出循环
-            if (white_match.max_sum <= last_white_sum) {
-                break;
-            }
-            
-            // 更新计数器和上一次的最大匹配值
-            counter_x += white_match.best_dx;
-            counter_y += white_match.best_dy;
-            counter_yaw += white_match.best_angle;
-            last_white_sum = white_match.max_sum;
-        }
+        refinePoseWithDetectedPoints(
+            white_points,
+            magenta_points,
+            purple_points,
+            black_points,
+            red_points,
+            blue_points,
+            center,
+            counter_x,
+            counter_y,
+            counter_yaw);
     }
+    rad = (counter_yaw) * CV_PI / 180.0;
 
     // 显示匹配效果
     cv::Mat image_match_result = image_lines_all.clone();
@@ -767,6 +1077,9 @@ int main(int argc, char** argv) {
 
     std::string lines_file = node->declare_parameter<std::string>("lines_file", "lines.jpg");
     image_lines_all = cv::imread(lines_file);
+    image_magenta_map = createMagentaMap(image_lines_all);
+    image_purple_map = createPurpleMap(image_lines_all);
+    image_black_map = createBlackMap(image_lines_all);
 
 
     std::string field_file = node->declare_parameter<std::string>("field_file", "field_bg.png");
@@ -795,7 +1108,8 @@ int main(int argc, char** argv) {
     image_blue_map = cv::imread(blue_map_path, cv::IMREAD_GRAYSCALE);
 
     // 检查图像是否成功加载
-    if(image_lines_map.empty() || image_red_map.empty() || image_blue_map.empty()) {
+    if(image_lines_map.empty() || image_red_map.empty() || image_blue_map.empty() ||
+       image_magenta_map.empty() || image_purple_map.empty() || image_black_map.empty()) {
         ROS_ERROR("场线模板读取失败！");
         return -1;
     }

@@ -35,13 +35,13 @@ cv::Mat LinesMap::createColorMask() const {
     cv::Mat hsv;
     cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
 
-    cv::Mat redMask1, redMask2, blueMask, magentaMask;
-    cv::inRange(hsv, cv::Scalar(0, 80, 80), cv::Scalar(12, 255, 255), redMask1);
-    cv::inRange(hsv, cv::Scalar(170, 80, 80), cv::Scalar(180, 255, 255), redMask2);
+    cv::Mat redMask1, blueMask, magentaMask, purpleMask;
+    cv::inRange(hsv, cv::Scalar(0, 120, 150), cv::Scalar(8, 255, 255), redMask1);
     cv::inRange(hsv, cv::Scalar(96, 70, 170), cv::Scalar(110, 200, 255), blueMask);
     cv::inRange(hsv, cv::Scalar(130, 45, 60), cv::Scalar(170, 255, 255), magentaMask);
+    cv::inRange(hsv, cv::Scalar(100, 100, 40), cv::Scalar(120, 255, 170), purpleMask);
 
-    cv::Mat colorMask = magentaMask;
+    cv::Mat colorMask = magentaMask | purpleMask;
 
     cv::Mat kernel = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3));
     cv::morphologyEx(colorMask, colorMask, cv::MORPH_OPEN, kernel);
@@ -52,10 +52,9 @@ cv::Mat LinesMap::createRedMask() const {
     cv::Mat hsv;
     cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
 
-    cv::Mat redMask1, redMask2;
-    cv::inRange(hsv, cv::Scalar(0, 80, 80), cv::Scalar(12, 255, 255), redMask1);
-    cv::inRange(hsv, cv::Scalar(170, 80, 80), cv::Scalar(180, 255, 255), redMask2);
-    return redMask1 | redMask2;
+    cv::Mat redMask;
+    cv::inRange(hsv, cv::Scalar(0, 120, 150), cv::Scalar(8, 255, 255), redMask);
+    return redMask;
 }
 
 cv::Mat LinesMap::createBlueMask() const {
@@ -75,19 +74,33 @@ cv::Mat LinesMap::createEdgeMask(const cv::Mat& mask) const {
     return edges;
 }
 
-cv::Mat LinesMap::createGradientFromEdges(const cv::Mat& edgeMask, int radius) const {
-    cv::Mat invertedEdges;
-    cv::threshold(edgeMask, invertedEdges, 0, 255, cv::THRESH_BINARY_INV);
+cv::Mat LinesMap::createDirectionalGradientFromMask(const cv::Mat& mask, int innerRadius, int outerRadius) const {
+    (void)innerRadius;
+    cv::Mat binaryMask;
+    cv::threshold(mask, binaryMask, 0, 255, cv::THRESH_BINARY);
 
-    cv::Mat distances;
-    cv::distanceTransform(invertedEdges, distances, cv::DIST_L2, 3);
+    cv::Mat invertedMask;
+    cv::bitwise_not(binaryMask, invertedMask);
 
-    cv::Mat gradient = cv::Mat::zeros(edgeMask.size(), CV_8UC1);
-    for (int y = 0; y < distances.rows; y++) {
-        for (int x = 0; x < distances.cols; x++) {
-            float distance = distances.at<float>(y, x);
-            if (distance <= radius) {
-                gradient.at<uchar>(y, x) = cv::saturate_cast<uchar>(255.0f * (1.0f - distance / radius));
+    cv::Mat outsideDistances;
+    cv::distanceTransform(invertedMask, outsideDistances, cv::DIST_L2, 3);
+
+    cv::Mat gradient = cv::Mat::zeros(mask.size(), CV_8UC1);
+    for (int y = 0; y < gradient.rows; y++) {
+        for (int x = 0; x < gradient.cols; x++) {
+            if (binaryMask.at<uchar>(y, x) > 0) {
+                gradient.at<uchar>(y, x) = 255;
+                continue;
+            }
+
+            if (outerRadius <= 0) {
+                continue;
+            }
+
+            const float distance = outsideDistances.at<float>(y, x);
+            if (distance <= outerRadius) {
+                gradient.at<uchar>(y, x) =
+                    cv::saturate_cast<uchar>(255.0f * (1.0f - distance / outerRadius));
             }
         }
     }
@@ -95,21 +108,24 @@ cv::Mat LinesMap::createGradientFromEdges(const cv::Mat& edgeMask, int radius) c
 }
 
 void LinesMap::generateGradientImage() {
-    cv::Mat edgeMask = createEdgeMask(createColorMask());
-    int radius = std::max(30, std::max(lines_image.cols, lines_image.rows) / 20);
-    gradientImage = createGradientFromEdges(edgeMask, radius);
+    cv::Mat colorMask = createColorMask();
+    int innerRadius = std::max(6, std::max(lines_image.cols, lines_image.rows) / 100);
+    int outerRadius = std::max(18, std::max(lines_image.cols, lines_image.rows) / 35);
+    gradientImage = createDirectionalGradientFromMask(colorMask, innerRadius, outerRadius);
 }
 
 void LinesMap::generateBlueGradientImage() {
-    cv::Mat edgeMask = createEdgeMask(createBlueMask());
-    int radius = std::max(60, std::max(lines_image.cols, lines_image.rows) / 10);
-    blueIMap = createGradientFromEdges(edgeMask, radius);
+    cv::Mat blueMask = createBlueMask();
+    int innerRadius = std::max(36, std::max(lines_image.cols, lines_image.rows) / 18);
+    int outerRadius = std::max(12, std::max(lines_image.cols, lines_image.rows) / 65);
+    blueIMap = createDirectionalGradientFromMask(blueMask, innerRadius, outerRadius);
 }
 
 void LinesMap::generateRedGradientImage() {
-    cv::Mat edgeMask = createEdgeMask(createRedMask());
-    int radius = std::max(60, std::max(lines_image.cols, lines_image.rows) / 10);
-    redIMap = createGradientFromEdges(edgeMask, radius);
+    cv::Mat redMask = createRedMask();
+    int innerRadius = std::max(36, std::max(lines_image.cols, lines_image.rows) / 18);
+    int outerRadius = std::max(12, std::max(lines_image.cols, lines_image.rows) / 65);
+    redIMap = createDirectionalGradientFromMask(redMask, innerRadius, outerRadius);
 }
 
 cv::Mat LinesMap::getLinesMap() const {
