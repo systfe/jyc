@@ -7,6 +7,7 @@
   <arg name="headless" default="false"/>
   <arg name="debug" default="false"/> 
   <arg name="verbose" default="false"/>
+  <arg name="start_point" default="1"/>
 
   <!-- We resume the logic in empty_world.launch, changing only the name of the world to be launched -->
   <include file="$(find-pkg-share robocon25_sim)/launch/gazebo_no_eol.launch.py">
@@ -16,8 +17,10 @@
     <arg name="gui" value="$(var gui)"/>
   </include>
   
-  <!-- Spawn a robot into Gazebo -->
-  <node name="spawn_urdf" pkg="gazebo_ros" exec="spawn_entity.py" args="-file $(find-pkg-share robocon25_sim)/models/robot.model -entity robot" />
+  <!-- Spawn a robot into the selected 300mm start area. start_point: 1, 2, 3, or 4. -->
+  <include file="$(find-pkg-share robocon_localization)/launch/spawn_robot_start.launch.py">
+    <arg name="start_point" value="$(var start_point)"/>
+  </include>
 
   <!-- 将 Gazebo 普通相机图像转换成模拟凸面镜全景图像 -->
   <node name="omni_mirror_sim" pkg="robocon_localization" exec="omni_mirror_sim" output="screen">
@@ -51,6 +54,7 @@
     <param name= "lines_map_file" value="$(find-pkg-share robocon_localization)/config/white_lines.png"/>
     <param name= "red_map_file" value="$(find-pkg-share robocon_localization)/config/red_lines.png"/>
     <param name= "blue_map_file" value="$(find-pkg-share robocon_localization)/config/blue_lines.png"/>
+    <param name= "use_odom_for_tracking" value="false"/>
   </node>
 
   <!-- 启动 relocalization 重定位节点 -->
@@ -64,4 +68,3 @@
   </node>
 
 </launch>
-

@@ -3,7 +3,9 @@
 #include <sensor_msgs/image_encodings.hpp>
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
+#include <array>
 #include <cmath>
+#include <limits>
 #include <nav_msgs/msg/odometry.hpp>
 #include "distance_lookup.h"
 #include "lines_map.h"
@@ -23,6 +25,15 @@ static float odom_x = 0;
 static float odom_y = 0;
 static float odom_yaw = 0;
 static bool odom_ready = false;
+static bool odom_origin_ready = false;
+static float odom_zero_x = 0;
+static float odom_zero_y = 0;
+static float odom_zero_yaw = 0;
+static bool vision_initialized = false;
+static float initial_counter_x = 0;
+static float initial_counter_y = 0;
+static float initial_counter_yaw = 0;
+static bool use_odom_for_tracking = false;
 static cv::Mat field_image;
 static cv::Mat monitor_image;
 static cv::Mat image_lines_all;
@@ -43,13 +54,223 @@ static float pixelsPerMeterY()
 
 static void syncPoseFromOdom()
 {
+    if (!use_odom_for_tracking) {
+        return;
+    }
+
     if (!odom_ready) {
+        return;
+    }
+
+    if (vision_initialized) {
+        counter_x = initial_counter_x + (odom_x - odom_zero_x) * pixelsPerMeterX();
+        counter_y = initial_counter_y - (odom_y - odom_zero_y) * pixelsPerMeterY();
+        counter_yaw = initial_counter_yaw - (odom_yaw - odom_zero_yaw);
         return;
     }
 
     counter_x = odom_x * pixelsPerMeterX();
     counter_y = -odom_y * pixelsPerMeterY();
     counter_yaw = -odom_yaw;
+}
+
+static int scorePointsOnMap(const std::vector<cv::Point2f>& points,
+                            const cv::Mat& score_map,
+                            const cv::Point2f& center,
+                            float pose_x,
+                            float pose_y,
+                            float pose_yaw)
+{
+    if (score_map.empty()) {
+        return 0;
+    }
+
+    const float rad = pose_yaw * CV_PI / 180.0f;
+    const float cos_yaw = std::cos(rad);
+    const float sin_yaw = std::sin(rad);
+    int score = 0;
+
+    for (const auto& point : points) {
+        const float x = point.x - center.x;
+        const float y = point.y - center.y;
+        const int map_x = cvRound(x * cos_yaw - y * sin_yaw + center.x + pose_x);
+        const int map_y = cvRound(x * sin_yaw + y * cos_yaw + center.y + pose_y);
+
+        int local_best = 0;
+        for (int dy = -3; dy <= 3; ++dy) {
+            for (int dx = -3; dx <= 3; ++dx) {
+                const int sample_x = map_x + dx;
+                const int sample_y = map_y + dy;
+                if (sample_x >= 0 && sample_x < score_map.cols &&
+                    sample_y >= 0 && sample_y < score_map.rows) {
+                    local_best = std::max(local_best,
+                                          static_cast<int>(score_map.at<uchar>(sample_y, sample_x)));
+                }
+            }
+        }
+        score += local_best;
+    }
+
+    return score;
+}
+
+static int scorePose(const std::vector<cv::Point2f>& white_points,
+                     const std::vector<cv::Point2f>& red_points,
+                     const std::vector<cv::Point2f>& blue_points,
+                     const cv::Point2f& center,
+                     float pose_x,
+                     float pose_y,
+                     float pose_yaw)
+{
+    return scorePointsOnMap(white_points, image_lines_map, center, pose_x, pose_y, pose_yaw) +
+           scorePointsOnMap(red_points, image_red_map, center, pose_x, pose_y, pose_yaw) +
+           scorePointsOnMap(blue_points, image_blue_map, center, pose_x, pose_y, pose_yaw);
+}
+
+static void refinePoseWithDetectedPoints(const std::vector<cv::Point2f>& white_points,
+                                         const std::vector<cv::Point2f>& red_points,
+                                         const std::vector<cv::Point2f>& blue_points,
+                                         const cv::Point2f& center,
+                                         float& pose_x,
+                                         float& pose_y,
+                                         float& pose_yaw)
+{
+    if (!red_points.empty() && !blue_points.empty()) {
+        int last_sum = 0;
+        for (int i = 0; i < 60; ++i) {
+            MatchResult match_result = LinesMatcher::findMatch(
+                red_points, blue_points, image_red_map, image_blue_map,
+                center, pose_x, pose_y, pose_yaw);
+
+            if (match_result.max_sum <= last_sum) {
+                break;
+            }
+
+            pose_x += match_result.best_dx;
+            pose_y += match_result.best_dy;
+            pose_yaw += match_result.best_angle;
+            last_sum = match_result.max_sum;
+        }
+    }
+
+    if (!white_points.empty()) {
+        int last_sum = 0;
+        for (int i = 0; i < 60; ++i) {
+            MatchResult white_match = LinesMatcher::refineMatchWithWhitePoints(
+                white_points, image_lines_map, center, pose_x, pose_y, pose_yaw);
+
+            if (white_match.max_sum <= last_sum) {
+                break;
+            }
+
+            pose_x += white_match.best_dx;
+            pose_y += white_match.best_dy;
+            pose_yaw += white_match.best_angle;
+            last_sum = white_match.max_sum;
+        }
+    }
+}
+
+static void setVisualInitialPose(float pose_x, float pose_y, float pose_yaw)
+{
+    initial_counter_x = pose_x;
+    initial_counter_y = pose_y;
+    initial_counter_yaw = pose_yaw;
+
+    if (odom_ready) {
+        odom_zero_x = odom_x;
+        odom_zero_y = odom_y;
+        odom_zero_yaw = odom_yaw;
+        odom_origin_ready = true;
+    }
+
+    vision_initialized = true;
+    syncPoseFromOdom();
+    if (!odom_ready) {
+        counter_x = initial_counter_x;
+        counter_y = initial_counter_y;
+        counter_yaw = initial_counter_yaw;
+    }
+}
+
+static bool tryInitialVisualLocalization(const std::vector<cv::Point2f>& white_points,
+                                         const std::vector<cv::Point2f>& red_points,
+                                         const std::vector<cv::Point2f>& blue_points,
+                                         const cv::Point2f& center)
+{
+    if (vision_initialized || image_lines_map.empty()) {
+        return false;
+    }
+
+    const size_t total_points = white_points.size() + red_points.size() + blue_points.size();
+    if (total_points < 4) {
+        return false;
+    }
+
+    struct StartPose {
+        const char* name;
+        float world_x;
+        float world_y;
+        float world_yaw;
+    };
+
+    constexpr float half_field = FIELD_SIZE_METERS / 2.0f;
+    constexpr float start_half = 0.15f;  // 300mm 出发区，中心距边缘 150mm。
+    constexpr float start_center = half_field - start_half;
+    const std::array<StartPose, 4> start_poses = {{
+        {"start_1",  start_center,  start_center, -90.0f},
+        {"start_2",  start_center, -start_center,  90.0f},
+        {"start_3", -start_center, -start_center,  90.0f},
+        {"start_4", -start_center,  start_center, -90.0f},
+    }};
+
+    int best_score = 0;
+    const char* best_name = "";
+    float best_x = 0;
+    float best_y = 0;
+    float best_yaw = 0;
+    float best_world_x = 0;
+    float best_world_y = 0;
+    float best_world_yaw = 0;
+
+    for (const auto& start_pose : start_poses) {
+        float pose_x = start_pose.world_x * pixelsPerMeterX();
+        float pose_y = -start_pose.world_y * pixelsPerMeterY();
+        float pose_yaw = -start_pose.world_yaw;
+
+        refinePoseWithDetectedPoints(white_points, red_points, blue_points, center,
+                                     pose_x, pose_y, pose_yaw);
+
+        const int score = scorePose(white_points, red_points, blue_points,
+                                    center, pose_x, pose_y, pose_yaw);
+        if (score > best_score) {
+            best_score = score;
+            best_name = start_pose.name;
+            best_x = pose_x;
+            best_y = pose_y;
+            best_yaw = pose_yaw;
+            best_world_x = start_pose.world_x;
+            best_world_y = start_pose.world_y;
+            best_world_yaw = start_pose.world_yaw;
+        }
+    }
+
+    if (best_score <= 0) {
+        return false;
+    }
+
+    setVisualInitialPose(best_x, best_y, best_yaw);
+    ROS_INFO(
+        "初始视觉定位: %s center=(%.2fm, %.2fm) start_yaw=%.1fdeg score=%d corrected=(%.2fm, %.2fm, %.1fdeg)",
+        best_name,
+        best_world_x,
+        best_world_y,
+        best_world_yaw,
+        best_score,
+        counter_x / pixelsPerMeterX(),
+        -counter_y / pixelsPerMeterY(),
+        -counter_yaw);
+    return true;
 }
 
 void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg) 
@@ -241,9 +462,18 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
             blue_points.size());
     }
 
+    cv::Point2f center = map_center;
+    if (!vision_initialized) {
+        tryInitialVisualLocalization(white_points, red_points, blue_points, center);
+    } else if (!use_odom_for_tracking) {
+        refinePoseWithDetectedPoints(white_points, red_points, blue_points, center,
+                                     counter_x, counter_y, counter_yaw);
+    }
+    syncPoseFromOdom();
+
     // [1]先使用红蓝边线进行初次匹配
     const bool has_sidelines = !red_points.empty() && !blue_points.empty();
-    if (has_sidelines && !odom_ready) {
+    if (has_sidelines && !vision_initialized) {
         red_avg = LinesMatcher::calculateLinePointsAverage(red_points, image_lines_map.size());
         blue_avg = LinesMatcher::calculateLinePointsAverage(blue_points, image_lines_map.size());
         
@@ -257,9 +487,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
         counter_yaw = -90 - angle;
     }
     
-    cv::Point2f center = map_center;
-
-    if (has_sidelines && !odom_ready) {
+    if (has_sidelines && !vision_initialized) {
         int last_max_sum = 0;
         while (true) {
             MatchResult match_result = LinesMatcher::findMatch(red_points, blue_points, 
@@ -278,10 +506,10 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
             last_max_sum = match_result.max_sum;
         }
     }
-
+    
     float rad = (counter_yaw) * CV_PI / 180.0;
     
-    if (has_sidelines && !odom_ready) {
+    if (has_sidelines && !vision_initialized) {
         // 初始化范围统计变量
         float min_x = std::numeric_limits<float>::max();
         float max_x = std::numeric_limits<float>::lowest();
@@ -333,7 +561,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     }
 
     // [2] 使用白点进行场线匹配
-    if (!odom_ready) {
+    if (!vision_initialized) {
         int last_white_sum = 0;
         while (true) {
             MatchResult white_match = LinesMatcher::refineMatchWithWhitePoints(
@@ -491,8 +719,8 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 // 添加重定位回调函数
 void relocCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
 {
-    counter_x = msg->pose.position.x * pixelsPerMeterX();
-    counter_y = -msg->pose.position.y * pixelsPerMeterY();
+    float pose_x = msg->pose.position.x * pixelsPerMeterX();
+    float pose_y = -msg->pose.position.y * pixelsPerMeterY();
     
     // 从四元数转换为欧拉角(yaw)
     double roll, pitch, yaw;
@@ -502,7 +730,8 @@ void relocCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
         msg->pose.orientation.z,
         msg->pose.orientation.w);
     tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-    counter_yaw = -yaw * 180.0 / M_PI;  // 转换为图像坐标系角度
+    float pose_yaw = -yaw * 180.0 / M_PI;  // 转换为图像坐标系角度
+    setVisualInitialPose(pose_x, pose_y, pose_yaw);
     ROS_WARN("重新定位: ( %.2f,  %.2f) yaw: %.2f", counter_x, counter_y, counter_yaw);
 }
 
@@ -520,6 +749,12 @@ void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& msg)
     tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
     odom_yaw = yaw * 180.0 / M_PI;
     odom_ready = true;
+    if (!odom_origin_ready) {
+        odom_zero_x = odom_x;
+        odom_zero_y = odom_y;
+        odom_zero_yaw = odom_yaw;
+        odom_origin_ready = true;
+    }
 }
 
 int main(int argc, char** argv) {
@@ -553,6 +788,7 @@ int main(int argc, char** argv) {
     std::string lines_map_path = node->declare_parameter<std::string>("lines_map_file", "");
     std::string red_map_path = node->declare_parameter<std::string>("red_map_file", "");
     std::string blue_map_path = node->declare_parameter<std::string>("blue_map_file", "");
+    use_odom_for_tracking = node->declare_parameter<bool>("use_odom_for_tracking", false);
     // 读取图像为灰度图
     image_lines_map = cv::imread(lines_map_path, cv::IMREAD_GRAYSCALE);
     image_red_map = cv::imread(red_map_path, cv::IMREAD_GRAYSCALE);
@@ -569,8 +805,11 @@ int main(int argc, char** argv) {
     // 添加重定位话题订阅
     auto reloc_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(
         "/reloc_pose", 1, relocCallback);
-    auto odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(
-        "/odom", 10, odomCallback);
+    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub;
+    if (use_odom_for_tracking) {
+        odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(
+            "/odom", 10, odomCallback);
+    }
 
     rclcpp::spin(node);
     rclcpp::shutdown();
