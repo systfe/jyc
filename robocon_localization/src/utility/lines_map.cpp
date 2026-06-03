@@ -28,6 +28,7 @@ cv::Mat LinesMap::createGradientMask(int size) {
             mask.at<uchar>(y, x) = value;
         }
     }
+
     return mask;
 }
 
@@ -37,9 +38,9 @@ cv::Mat LinesMap::createColorMask() const {
 
     cv::Mat redMask1, blueMask, magentaMask, purpleMask;
     cv::inRange(hsv, cv::Scalar(0, 120, 150), cv::Scalar(8, 255, 255), redMask1);
-    cv::inRange(hsv, cv::Scalar(96, 70, 170), cv::Scalar(110, 200, 255), blueMask);
+    cv::inRange(hsv, cv::Scalar(94, 45, 170), cv::Scalar(114, 225, 255), blueMask);
     cv::inRange(hsv, cv::Scalar(130, 45, 60), cv::Scalar(170, 255, 255), magentaMask);
-    cv::inRange(hsv, cv::Scalar(100, 100, 40), cv::Scalar(120, 255, 170), purpleMask);
+    cv::inRange(hsv, cv::Scalar(94, 90, 30), cv::Scalar(126, 255, 165), purpleMask);
 
     cv::Mat colorMask = magentaMask | purpleMask;
 
@@ -62,7 +63,7 @@ cv::Mat LinesMap::createBlueMask() const {
     cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
 
     cv::Mat blueMask;
-    cv::inRange(hsv, cv::Scalar(96, 70, 170), cv::Scalar(110, 200, 255), blueMask);
+    cv::inRange(hsv, cv::Scalar(94, 45, 170), cv::Scalar(114, 225, 255), blueMask);
     return blueMask;
 }
 

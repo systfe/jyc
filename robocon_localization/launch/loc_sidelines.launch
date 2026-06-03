@@ -43,6 +43,12 @@
     <param name= "lines_map_file" value="$(find-pkg-share robocon_localization)/config/white_lines.png"/>
     <param name= "red_map_file" value="$(find-pkg-share robocon_localization)/config/red_lines.png"/>
     <param name= "blue_map_file" value="$(find-pkg-share robocon_localization)/config/blue_lines.png"/>
+    <param name= "image_topic" value="/omni_camera/image_raw"/>
+    <param name= "odom_topic" value="/odom"/>
+    <param name= "reloc_pose_topic" value="/reloc_pose"/>
+    <param name= "pose_topic" value="/robot/pose"/>
+    <param name= "pose_frame_id" value="map"/>
+    <param name= "use_safety_axis_constraint" value="false"/>
   </node>
 
   <!-- 启动 relocalization 重定位节点 -->

@@ -5,6 +5,7 @@
 ## 当前系统结构
 
 - `robocon25_sim`
+  - 作用：仿真环境
   - Gazebo 世界、场地模型、机器人模型和 `/cmd_vel` 控制插件。
   - 场地尺寸为 `3m x 3m`。
   - 场地贴图来自 `robocon25_sim/materials/textures/lines.png`。
@@ -17,6 +18,52 @@
   - 重定位测试：`relocalization`
   - 颜色模板和距离表在 `robocon_localization/config/`
 
+- `robot_bringup`
+  - 作用：仿真/实物的统一启动和接口桥接。
+  - 仿真入口：启动 Gazebo、全景图模拟、定位节点，并把底层话题桥接到 `/robot/*`。
+  - 实物入口：启动定位节点，默认从 `/robot/image_raw` 读取真实摄像头图像。
+
+- `robot_control`
+  - 作用：控制层 Python 包。
+  - 当前只保留包骨架，后续只通过统一接口读取数据、发布控制命令，不直接依赖 Gazebo 或具体摄像头。
+
+## 统一接口
+
+控制层建议只使用下面这些通用话题：
+
+```txt
+/robot/image_raw   sensor_msgs/msg/Image
+/robot/pose        geometry_msgs/msg/PoseStamped
+/robot/odom        nav_msgs/msg/Odometry
+/robot/cmd_vel     geometry_msgs/msg/Twist
+```
+
+含义：
+
+- `/robot/image_raw`：统一摄像头图像。仿真时由 `/omni_camera/image_raw` 桥接而来；实物时由真实鱼眼摄像头驱动发布或 remap 过来。
+- `/robot/pose`：视觉定位输出，单位为米，坐标系为 `map`。
+- `/robot/odom`：底盘里程计。仿真时由 `/odom` 桥接而来；实物时由底盘驱动发布或 remap 过来。
+- `/robot/cmd_vel`：控制层发布的速度命令。仿真时会桥接到 Gazebo 底盘插件的 `/cmd_vel`。
+
+底层仍然可以保留自己的原始话题，例如 `/cmd_vel`、`/odom`、`/omni_camera/image_raw`。控制层不直接使用这些原始话题，避免仿真和实物切换时修改控制代码。
+
+## 编译
+
+```bash
+cd /home/cst/jyc
+source /opt/ros/humble/setup.bash
+colcon build
+source install/setup.bash
+```
+
+只编译模块化相关包：
+
+```bash
+cd /home/cst/jyc
+source /opt/ros/humble/setup.bash
+colcon build --packages-select robocon_localization robot_bringup
+source install/setup.bash
+```
 
 ## 启动完整定位仿真
 
@@ -32,6 +79,18 @@ pkill -f gzclient
 ```bash
 source /opt/ros/humble/setup.bash
 source /home/cst/jyc/install/setup.bash
+ros2 launch robot_bringup sim.launch.py gui:=true verbose:=true
+```
+
+可以选择 1 到 4 号出发区：
+
+```bash
+ros2 launch robot_bringup sim.launch.py start_point:=1
+```
+
+旧入口仍然可用：
+
+```bash
 ros2 launch robocon_localization localization.launch gui:=true verbose:=true
 ```
 
@@ -50,9 +109,35 @@ ros2 launch robocon_localization localization.launch gui:=true verbose:=true
 ros2 run rqt_robot_steering rqt_robot_steering
 ```
 
-话题选择 `/cmd_vel`。
+使用 `robot_bringup sim.launch.py` 启动时，话题选择 `/robot/cmd_vel`。桥接节点会转发到仿真底盘插件的 `/cmd_vel`。
+
+如果使用旧的 `robocon_localization localization.launch` 启动，话题仍然选择 `/cmd_vel`。
 
 当前机器人使用自定义 Gazebo 插件 `librobocon_cmd_vel_model_plugin.so`，直接订阅 `/cmd_vel` 并发布 `/odom`。如果机器人不转或不动，优先确认 `robot.model` 中插件名称不是旧的 `libgazebo_ros_planar_move.so`。
+
+## 启动实物定位
+
+实物上不启动 `robocon25_sim`，也不需要修改仿真的全景相机模拟节点。真实鱼眼摄像头需要由摄像头驱动发布图像，并 remap 到统一图像接口：
+
+```txt
+/robot/image_raw
+```
+
+然后启动定位：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/cst/jyc/install/setup.bash
+ros2 launch robot_bringup real_localization.launch.py
+```
+
+如果摄像头驱动发布的是其他话题，例如 `/camera/image_raw`，可以启动时指定：
+
+```bash
+ros2 launch robot_bringup real_localization.launch.py image_topic:=/camera/image_raw
+```
+
+真实鱼眼摄像头必须重新标定 `robocon_localization/config/dist_table.txt`。仿真的距离表不能直接用于实物。
 
 ## 窗口含义
 
@@ -260,11 +345,11 @@ Scalar(130, 45, 60), Scalar(170, 255, 255)
 5. 如果 `result` 有 X，再看 `match_result` 是否有对应颜色点。
 6. 如果 `match_result` 没点，检查距离表和投影参数。
 7. 如果颜色混淆，调整 HSV 阈值并重新生成模板。
-8. 如果定位窗口机器人不动，检查 `/odom`：
+8. 如果定位窗口机器人不动，先检查统一接口 `/robot/pose` 和 `/robot/odom`：
 
 ```bash
-ros2 topic echo /odom
+ros2 topic echo /robot/pose
+ros2 topic echo /robot/odom
 ```
 
-有 `/odom` 但窗口不动，再检查 `loc_sidelines` 是否正常启动。
-
+旧入口没有启动 `robot_bringup` 桥接时，检查原始 `/odom`。

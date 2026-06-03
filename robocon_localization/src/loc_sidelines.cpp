@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <initializer_list>
+#include <builtin_interfaces/msg/time.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include "distance_lookup.h"
 #include "lines_map.h"
@@ -34,6 +36,7 @@ static float initial_counter_x = 0;
 static float initial_counter_y = 0;
 static float initial_counter_yaw = 0;
 static bool use_odom_for_tracking = false;
+static bool use_safety_axis_constraint = false;
 static cv::Mat field_image;
 static cv::Mat monitor_image;
 static cv::Mat image_lines_all;
@@ -44,6 +47,24 @@ static cv::Mat image_magenta_map;
 static cv::Mat image_purple_map;
 static cv::Mat image_black_map;
 static constexpr float FIELD_SIZE_METERS = 3.0f;
+static constexpr int MONITOR_INFO_HEIGHT = 96;
+static rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr pose_pub;
+static std::string pose_frame_id = "map";
+
+struct AxisEstimate {
+    bool valid = false;
+    float angle_deg = 0.0f;
+    float confidence = 0.0f;
+};
+
+enum class MatchFocus {
+    Position,
+    Yaw,
+    Initial,
+};
+
+static AxisEstimate red_map_axis;
+static AxisEstimate blue_map_axis;
 
 static float pixelsPerMeterX()
 {
@@ -75,6 +96,34 @@ static bool isPoseInsideField(float pose_x, float pose_y)
            pose_y >= -maxPoseY() && pose_y <= maxPoseY();
 }
 
+static geometry_msgs::msg::PoseStamped makePoseMessage(const builtin_interfaces::msg::Time& stamp)
+{
+    geometry_msgs::msg::PoseStamped pose_msg;
+    pose_msg.header.stamp = stamp;
+    pose_msg.header.frame_id = pose_frame_id;
+
+    pose_msg.pose.position.x = counter_x / pixelsPerMeterX();
+    pose_msg.pose.position.y = -counter_y / pixelsPerMeterY();
+    pose_msg.pose.position.z = 0.0;
+
+    const double yaw_rad = -counter_yaw * M_PI / 180.0;
+    pose_msg.pose.orientation.x = 0.0;
+    pose_msg.pose.orientation.y = 0.0;
+    pose_msg.pose.orientation.z = std::sin(yaw_rad / 2.0);
+    pose_msg.pose.orientation.w = std::cos(yaw_rad / 2.0);
+
+    return pose_msg;
+}
+
+static void publishRobotPose(const builtin_interfaces::msg::Time& stamp)
+{
+    if (!pose_pub) {
+        return;
+    }
+
+    pose_pub->publish(makePoseMessage(stamp));
+}
+
 static void clampPoseInsideField(float& pose_x, float& pose_y)
 {
     if (image_lines_map.empty()) {
@@ -94,6 +143,115 @@ static float normalizeAngleDeg(float angle)
         angle += 360.0f;
     }
     return angle;
+}
+
+static float normalizeAxisAngleDeg(float angle)
+{
+    angle = normalizeAngleDeg(angle);
+    while (angle > 90.0f) {
+        angle -= 180.0f;
+    }
+    while (angle < -90.0f) {
+        angle += 180.0f;
+    }
+    return angle;
+}
+
+static float axisAngleDiffDeg(float a, float b)
+{
+    return std::abs(normalizeAxisAngleDeg(a - b));
+}
+
+static AxisEstimate estimateAxisFromPoints(const std::vector<cv::Point2f>& points)
+{
+    AxisEstimate axis;
+    if (points.size() < 8) {
+        return axis;
+    }
+
+    cv::Point2f mean(0.0f, 0.0f);
+    for (const auto& point : points) {
+        mean += point;
+    }
+    mean.x /= static_cast<float>(points.size());
+    mean.y /= static_cast<float>(points.size());
+
+    double cov_xx = 0.0;
+    double cov_xy = 0.0;
+    double cov_yy = 0.0;
+    for (const auto& point : points) {
+        const double x = point.x - mean.x;
+        const double y = point.y - mean.y;
+        cov_xx += x * x;
+        cov_xy += x * y;
+        cov_yy += y * y;
+    }
+    cov_xx /= static_cast<double>(points.size());
+    cov_xy /= static_cast<double>(points.size());
+    cov_yy /= static_cast<double>(points.size());
+
+    const double trace = cov_xx + cov_yy;
+    const double delta = std::sqrt(std::max(0.0, (cov_xx - cov_yy) * (cov_xx - cov_yy) + 4.0 * cov_xy * cov_xy));
+    const double lambda_major = 0.5 * (trace + delta);
+    const double lambda_minor = 0.5 * (trace - delta);
+    if (lambda_major < 1e-6) {
+        return axis;
+    }
+
+    const double confidence = (lambda_major - lambda_minor) / lambda_major;
+    if (confidence < 0.35) {
+        return axis;
+    }
+
+    axis.valid = true;
+    axis.confidence = static_cast<float>(confidence);
+    axis.angle_deg = normalizeAxisAngleDeg(
+        static_cast<float>(0.5 * std::atan2(2.0 * cov_xy, cov_xx - cov_yy) * 180.0 / CV_PI));
+    return axis;
+}
+
+static AxisEstimate estimateAxisFromMap(const cv::Mat& map)
+{
+    std::vector<cv::Point2f> points;
+    points.reserve(static_cast<size_t>(map.rows * map.cols / 16));
+
+    for (int y = 0; y < map.rows; ++y) {
+        for (int x = 0; x < map.cols; ++x) {
+            if (map.at<uchar>(y, x) >= 240) {
+                points.push_back(cv::Point2f(static_cast<float>(x), static_cast<float>(y)));
+            }
+        }
+    }
+
+    return estimateAxisFromPoints(points);
+}
+
+static int scoreSafetyAxisConsistency(const std::vector<cv::Point2f>& points,
+                                      const AxisEstimate& map_axis,
+                                      float pose_yaw,
+                                      MatchFocus focus)
+{
+    if (!use_safety_axis_constraint) {
+        return 0;
+    }
+
+    if (!map_axis.valid) {
+        return 0;
+    }
+
+    AxisEstimate observed_axis = estimateAxisFromPoints(points);
+    if (!observed_axis.valid) {
+        return 0;
+    }
+
+    const float transformed_axis = normalizeAxisAngleDeg(observed_axis.angle_deg + pose_yaw);
+    const float diff = axisAngleDiffDeg(transformed_axis, map_axis.angle_deg);
+    if (diff <= 25.0f) {
+        return static_cast<int>((25.0f - diff) * observed_axis.confidence * 40.0f);
+    }
+
+    const float penalty_scale = focus == MatchFocus::Yaw ? 180.0f : 110.0f;
+    return -static_cast<int>((diff - 25.0f) * observed_axis.confidence * penalty_scale);
 }
 
 static cv::Mat createDirectionalGradientFromMask(const cv::Mat& mask, int innerRadius, int outerRadius)
@@ -163,7 +321,7 @@ static cv::Mat createPurpleMap(const cv::Mat& lines_image)
     cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
 
     cv::Mat purple_mask;
-    cv::inRange(hsv, cv::Scalar(100, 100, 40), cv::Scalar(120, 255, 170), purple_mask);
+    cv::inRange(hsv, cv::Scalar(94, 90, 30), cv::Scalar(126, 255, 165), purple_mask);
     cv::morphologyEx(
         purple_mask,
         purple_mask,
@@ -258,11 +416,61 @@ static int scorePointsOnMap(const std::vector<cv::Point2f>& points,
     return score;
 }
 
-enum class MatchFocus {
-    Position,
-    Yaw,
-    Initial,
-};
+static bool hasEnoughFeaturePoints(const std::vector<cv::Point2f>& points)
+{
+    return points.size() >= 3;
+}
+
+static float featureReliability(const std::vector<cv::Point2f>& points)
+{
+    const size_t count = points.size();
+    if (count == 0) {
+        return 0.0f;
+    }
+    if (count < 3) {
+        return 0.05f;
+    }
+    if (count < 6) {
+        return 0.25f;
+    }
+    if (count < 9) {
+        return 0.60f;
+    }
+    if (count < 12) {
+        return 0.85f;
+    }
+    return 1.0f;
+}
+
+static float dominantFeatureBoost(size_t count, std::initializer_list<size_t> other_counts)
+{
+    if (count < 9) {
+        return 1.0f;
+    }
+
+    size_t max_other = 0;
+    size_t total_other = 0;
+    for (size_t other_count : other_counts) {
+        max_other = std::max(max_other, other_count);
+        total_other += other_count;
+    }
+
+    if (max_other < 3) {
+        return 1.65f;
+    }
+    if (max_other < 6 && count >= total_other) {
+        return 1.45f;
+    }
+    if (max_other < count / 2) {
+        return 1.25f;
+    }
+    return 1.0f;
+}
+
+static int reliableScore(int raw_score, const std::vector<cv::Point2f>& points, float boost = 1.0f)
+{
+    return static_cast<int>(raw_score * featureReliability(points) * boost);
+}
 
 static int scorePose(const std::vector<cv::Point2f>& white_points,
                      const std::vector<cv::Point2f>& magenta_points,
@@ -281,26 +489,55 @@ static int scorePose(const std::vector<cv::Point2f>& white_points,
         return -1;
     }
 
-    const int magenta_score =
-        scorePointsOnMap(magenta_points, image_magenta_map, center, pose_x, pose_y, pose_yaw);
-    const int purple_score =
-        scorePointsOnMap(purple_points, image_purple_map, center, pose_x, pose_y, pose_yaw);
-    const int black_score =
-        scorePointsOnMap(black_points, image_black_map, center, pose_x, pose_y, pose_yaw);
-    const int color_side_score =
-        scorePointsOnMap(red_points, image_red_map, center, pose_x, pose_y, pose_yaw) +
-        scorePointsOnMap(blue_points, image_blue_map, center, pose_x, pose_y, pose_yaw);
+    const float magenta_boost = dominantFeatureBoost(
+        magenta_points.size(),
+        {purple_points.size(), black_points.size(), red_points.size(), blue_points.size()});
+    const float purple_boost = dominantFeatureBoost(
+        purple_points.size(),
+        {magenta_points.size(), black_points.size(), red_points.size(), blue_points.size()});
+    const float black_boost = dominantFeatureBoost(
+        black_points.size(),
+        {magenta_points.size(), purple_points.size(), red_points.size(), blue_points.size()});
+    const float red_boost = dominantFeatureBoost(
+        red_points.size(),
+        {magenta_points.size(), purple_points.size(), black_points.size(), blue_points.size()});
+    const float blue_boost = dominantFeatureBoost(
+        blue_points.size(),
+        {magenta_points.size(), purple_points.size(), black_points.size(), red_points.size()});
+
+    const int magenta_score = reliableScore(
+        scorePointsOnMap(magenta_points, image_magenta_map, center, pose_x, pose_y, pose_yaw),
+        magenta_points,
+        magenta_boost);
+    const int purple_score = reliableScore(
+        scorePointsOnMap(purple_points, image_purple_map, center, pose_x, pose_y, pose_yaw),
+        purple_points,
+        purple_boost);
+    const int black_score = reliableScore(
+        scorePointsOnMap(black_points, image_black_map, center, pose_x, pose_y, pose_yaw),
+        black_points,
+        black_boost);
+    const int red_score =
+        reliableScore(scorePointsOnMap(red_points, image_red_map, center, pose_x, pose_y, pose_yaw), red_points, red_boost);
+    const int blue_score =
+        reliableScore(scorePointsOnMap(blue_points, image_blue_map, center, pose_x, pose_y, pose_yaw), blue_points, blue_boost);
+    const int safety_axis_score =
+        scoreSafetyAxisConsistency(red_points, red_map_axis, pose_yaw, focus) +
+        scoreSafetyAxisConsistency(blue_points, blue_map_axis, pose_yaw, focus);
 
     switch (focus) {
     case MatchFocus::Position:
-        // 位置主要靠洋红；紫色辅助位置，红蓝只弱消歧。
-        return magenta_score * 24 + purple_score * 6 + black_score * 2 + color_side_score;
+        // 位置主要靠洋红；红色安全区强约束位置，蓝色因可能混入紫色而弱约束。
+        return magenta_score * 24 + purple_score * 6 + black_score * 2 +
+               red_score * 8 + blue_score * 2 + safety_axis_score * 8;
     case MatchFocus::Yaw:
-        // 朝向直线主要靠紫色和安全区中线黑杠；红蓝用于判定正反方向，洋红弱约束位置。
-        return magenta_score * 2 + purple_score * 16 + black_score * 14 + color_side_score * 10;
+        // 朝向优先洋红，其次紫色；红色弱辅助，蓝色更弱，避免紫色误识别成蓝色带偏。
+        return magenta_score * 18 + purple_score * 14 + black_score * 10 +
+               red_score * 4 + blue_score * 2 + safety_axis_score * 8;
     case MatchFocus::Initial:
-        // 开局四候选综合判断：洋红定位置，紫色/黑杠定方向线，红蓝定正负方向。
-        return magenta_score * 20 + purple_score * 12 + black_score * 10 + color_side_score * 8;
+        // 开局综合判断：洋红略高于紫色；大量红点强制倾向红色安全区，蓝色只作弱辅助。
+        return magenta_score * 22 + purple_score * 16 + black_score * 8 +
+               red_score * 12 + blue_score * 4 + safety_axis_score * 8;
     }
 
     return -1;
@@ -313,7 +550,7 @@ static void refineYawWithSidelinePoints(const std::vector<cv::Point2f>& red_poin
                                         float pose_y,
                                         float& pose_yaw)
 {
-    if (red_points.empty() && blue_points.empty()) {
+    if (!hasEnoughFeaturePoints(red_points) && !hasEnoughFeaturePoints(blue_points)) {
         return;
     }
 
@@ -324,8 +561,8 @@ static void refineYawWithSidelinePoints(const std::vector<cv::Point2f>& red_poin
         for (float angle = -1.0f; angle <= 1.0f; angle += 1.0f) {
             const float test_yaw = pose_yaw + angle;
             const int sum =
-                scorePointsOnMap(red_points, image_red_map, center, pose_x, pose_y, test_yaw) +
-                scorePointsOnMap(blue_points, image_blue_map, center, pose_x, pose_y, test_yaw);
+                reliableScore(scorePointsOnMap(red_points, image_red_map, center, pose_x, pose_y, test_yaw), red_points) * 3 +
+                reliableScore(scorePointsOnMap(blue_points, image_blue_map, center, pose_x, pose_y, test_yaw), blue_points);
             if (sum > best_sum) {
                 best_sum = sum;
                 best_angle = angle;
@@ -354,7 +591,7 @@ static void refinePoseWithDetectedPoints(const std::vector<cv::Point2f>& white_p
 {
     refineYawWithSidelinePoints(red_points, blue_points, center, pose_x, pose_y, pose_yaw);
 
-    if (!magenta_points.empty()) {
+    if (hasEnoughFeaturePoints(magenta_points)) {
         int last_sum = 0;
         for (int i = 0; i < 40; ++i) {
             MatchResult magenta_match = LinesMatcher::refineMatchWithWhitePoints(
@@ -372,7 +609,7 @@ static void refinePoseWithDetectedPoints(const std::vector<cv::Point2f>& white_p
         }
     }
 
-    if (!purple_points.empty()) {
+    if (hasEnoughFeaturePoints(purple_points)) {
         int last_sum = 0;
         for (int i = 0; i < 40; ++i) {
             MatchResult purple_match = LinesMatcher::refineMatchWithWhitePoints(
@@ -390,7 +627,7 @@ static void refinePoseWithDetectedPoints(const std::vector<cv::Point2f>& white_p
         }
     }
 
-    if (!black_points.empty()) {
+    if (hasEnoughFeaturePoints(black_points)) {
         int last_sum = 0;
         for (int i = 0; i < 30; ++i) {
             MatchResult black_match = LinesMatcher::refineMatchWithWhitePoints(
@@ -536,7 +773,7 @@ static void setVisualInitialPose(float pose_x, float pose_y, float pose_yaw)
 
     vision_initialized = true;
     syncPoseFromOdom();
-    if (!odom_ready) {
+    if (!use_odom_for_tracking || !odom_ready) {
         counter_x = initial_counter_x;
         counter_y = initial_counter_y;
         counter_yaw = initial_counter_yaw;
@@ -555,7 +792,11 @@ static bool tryInitialVisualLocalization(const std::vector<cv::Point2f>& white_p
         return false;
     }
 
-    if (magenta_points.size() < 4) {
+    const bool has_position_features =
+        magenta_points.size() >= 6 ||
+        purple_points.size() >= 6 ||
+        (magenta_points.size() >= 3 && purple_points.size() >= 3);
+    if (!has_position_features) {
         return false;
     }
 
@@ -660,14 +901,14 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
     // 场地图浅蓝 RGB(92,169,221)，OpenCV HSV 约为 (102,149,221)。
     // 深色紫/蓝边 Hue 接近但更暗且饱和度更高，所以用亮度和饱和度排除它。
-    inRange(image_hsv, Scalar(96, 70, 170), Scalar(110, 200, 255), image_blue);
+    inRange(image_hsv, Scalar(94, 45, 170), Scalar(114, 225, 255), image_blue);
     inRange(image_hsv, Scalar(0, 0, 0), Scalar(180, 80, 55), image_black);
 
     // 场地图洋红 RGB(255,25,255)，OpenCV HSV 约为 (150,230,255)。
     // 紫色轮廓在贴图中是低亮度高饱和的深蓝紫，例如 RGB(0,61,129)。
     Mat image_magenta, image_purple;
     inRange(image_hsv, Scalar(130, 45, 60), Scalar(170, 255, 255), image_magenta);
-    inRange(image_hsv, Scalar(100, 100, 40), Scalar(120, 255, 170), image_purple);
+    inRange(image_hsv, Scalar(94, 90, 30), Scalar(126, 255, 165), image_purple);
 
     Mat image_white = image_magenta | image_purple;
     morphologyEx(image_white, image_white, MORPH_OPEN,
@@ -872,29 +1113,9 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
                                     counter_x, counter_y, counter_yaw);
     }
     syncPoseFromOdom();
-
-    // 红/蓝安全区只用于辅助朝向，不参与位置匹配。
-    if (!vision_initialized) {
-        refineYawWithSidelinePoints(red_points, blue_points, center, counter_x, counter_y, counter_yaw);
-    }
     
     float rad = (counter_yaw) * CV_PI / 180.0;
-
-    // 使用洋红出发区优先、绿色混合点辅助的位置匹配。
-    if (!vision_initialized) {
-        refinePoseWithDetectedPoints(
-            white_points,
-            magenta_points,
-            purple_points,
-            black_points,
-            red_points,
-            blue_points,
-            center,
-            counter_x,
-            counter_y,
-            counter_yaw);
-    }
-    rad = (counter_yaw) * CV_PI / 180.0;
+    const bool have_valid_pose = vision_initialized;
 
     // 显示匹配效果
     cv::Mat image_match_result = image_lines_all.clone();
@@ -913,10 +1134,14 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
     // 绘制白点
     for(const auto& point : white_points) {
-        float x = point.x - center.x;
-        float y = point.y - center.y;
-        float rotated_x = x * cos(rad) - y * sin(rad) + center.x + counter_x;
-        float rotated_y = x * sin(rad) + y * cos(rad) + center.y + counter_y;
+        float rotated_x = point.x;
+        float rotated_y = point.y;
+        if (have_valid_pose) {
+            float x = point.x - center.x;
+            float y = point.y - center.y;
+            rotated_x = x * cos(rad) - y * sin(rad) + center.x + counter_x;
+            rotated_y = x * sin(rad) + y * cos(rad) + center.y + counter_y;
+        }
 
         if(rotated_x >= 0 && rotated_x < image_match_result.cols &&
            rotated_y >= 0 && rotated_y < image_match_result.rows) {
@@ -926,10 +1151,14 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
     // 绘制红点
     for(const auto& point : red_points) {
-        float x = point.x - center.x;
-        float y = point.y - center.y;
-        float rotated_x = x * cos(rad) - y * sin(rad) + center.x + counter_x;
-        float rotated_y = x * sin(rad) + y * cos(rad) + center.y + counter_y;
+        float rotated_x = point.x;
+        float rotated_y = point.y;
+        if (have_valid_pose) {
+            float x = point.x - center.x;
+            float y = point.y - center.y;
+            rotated_x = x * cos(rad) - y * sin(rad) + center.x + counter_x;
+            rotated_y = x * sin(rad) + y * cos(rad) + center.y + counter_y;
+        }
 
         if(rotated_x >= 0 && rotated_x < image_match_result.cols &&
            rotated_y >= 0 && rotated_y < image_match_result.rows) {
@@ -939,10 +1168,14 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
     // 绘制蓝点
     for(const auto& point : blue_points) {
-        float x = point.x - center.x;
-        float y = point.y - center.y;
-        float rotated_x = x * cos(rad) - y * sin(rad) + center.x + counter_x;
-        float rotated_y = x * sin(rad) + y * cos(rad) + center.y + counter_y;
+        float rotated_x = point.x;
+        float rotated_y = point.y;
+        if (have_valid_pose) {
+            float x = point.x - center.x;
+            float y = point.y - center.y;
+            rotated_x = x * cos(rad) - y * sin(rad) + center.x + counter_x;
+            rotated_y = x * sin(rad) + y * cos(rad) + center.y + counter_y;
+        }
 
         if(rotated_x >= 0 && rotated_x < image_match_result.cols &&
            rotated_y >= 0 && rotated_y < image_match_result.rows) {
@@ -979,44 +1212,55 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     // }
 
     // 创建显示用的图像副本
-    field_image.copyTo(monitor_image(cv::Rect(0, 50, field_image.cols, field_image.rows)));
+    field_image.copyTo(monitor_image(cv::Rect(0, MONITOR_INFO_HEIGHT, field_image.cols, field_image.rows)));
     
     // 清除并更新信息区域
-    cv::Mat info_area = monitor_image(cv::Rect(0, 0, monitor_image.cols, 50));
+    cv::Mat info_area = monitor_image(cv::Rect(0, 0, monitor_image.cols, MONITOR_INFO_HEIGHT));
     info_area.setTo(cv::Scalar(255, 255, 255));  // 清除之前的文本
     
-    std::string coordinates = cv::format(
-        "X: %.2fm  Y: %.2fm  Yaw: %.1f",
-        counter_x / pixelsPerMeterX(),
-        -counter_y / pixelsPerMeterY(),
-        -counter_yaw);
-    cv::putText(monitor_image, coordinates, cv::Point(0, 30), 
-                cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0, 0, 0), 2);
+    std::string vision_coordinates = have_valid_pose
+        ? cv::format(
+            "Vision X: %.2fm Y: %.2fm Yaw: %.1fdeg",
+            counter_x / pixelsPerMeterX(),
+            -counter_y / pixelsPerMeterY(),
+            -counter_yaw)
+        : cv::format(
+            "Vision  waiting: magenta=%zu purple=%zu black=%zu red=%zu blue=%zu",
+            magenta_points.size(),
+            purple_points.size(),
+            black_points.size(),
+            red_points.size(),
+            blue_points.size());
+    cv::putText(monitor_image, vision_coordinates, cv::Point(8, 34),
+                cv::FONT_HERSHEY_SIMPLEX, 0.62, cv::Scalar(0, 0, 0), 2);
+
+    std::string odom_coordinates = odom_ready
+        ? cv::format("Odom X: %.2fm Y: %.2fm Yaw: %.1fdeg", odom_x, odom_y, odom_yaw)
+        : std::string("Odom    waiting for odom...");
+    cv::putText(monitor_image, odom_coordinates, cv::Point(8, 74),
+                cv::FONT_HERSHEY_SIMPLEX, 0.62, cv::Scalar(50, 50, 50), 2);
     
-    // 绘制机器人图标
-    // 计算field_image的中心点
-    cv::Point2f bottom_center(field_image.cols/2.0f, field_image.rows/2.0f+50);
-    
-    // 计算机器人在图像中的位置
-    float display_scale_x = static_cast<float>(field_image.cols) / image_lines_map.cols;
-    float display_scale_y = static_cast<float>(field_image.rows) / image_lines_map.rows;
-    float robot_x = bottom_center.x + counter_x * display_scale_x;
-    float robot_y = bottom_center.y + counter_y * display_scale_y;
-    cv::Point robot_pos(robot_x, robot_y);
-    
-    // 绘制机器人主体（紫色填充的圆形，黑色轮廓）
-    int robot_radius = 15;
-    cv::circle(monitor_image, robot_pos, robot_radius, cv::Scalar(0,0,0), 2);  // 黑色轮廓
-    cv::circle(monitor_image, robot_pos, robot_radius-2, cv::Scalar(255,0,255), -1);  // 紫色填充
-    
-    // 绘制朝向线段
-    float direction_length = 20.0f;
-    float direction_rad = counter_yaw * CV_PI / 180.0;
-    cv::Point direction_end(
-        robot_x + direction_length * cos(direction_rad),
-        robot_y + direction_length * sin(direction_rad)
-    );
-    cv::line(monitor_image, robot_pos, direction_end, cv::Scalar(0,0,0), 2);
+    if (have_valid_pose) {
+        // 绘制机器人图标
+        cv::Point2f bottom_center(field_image.cols/2.0f, field_image.rows/2.0f + MONITOR_INFO_HEIGHT);
+        float display_scale_x = static_cast<float>(field_image.cols) / image_lines_map.cols;
+        float display_scale_y = static_cast<float>(field_image.rows) / image_lines_map.rows;
+        float robot_x = bottom_center.x + counter_x * display_scale_x;
+        float robot_y = bottom_center.y + counter_y * display_scale_y;
+        cv::Point robot_pos(robot_x, robot_y);
+
+        int robot_radius = 15;
+        cv::circle(monitor_image, robot_pos, robot_radius, cv::Scalar(0,0,0), 2);
+        cv::circle(monitor_image, robot_pos, robot_radius-2, cv::Scalar(255,0,255), -1);
+
+        float direction_length = 20.0f;
+        float direction_rad = counter_yaw * CV_PI / 180.0;
+        cv::Point direction_end(
+            robot_x + direction_length * cos(direction_rad),
+            robot_y + direction_length * sin(direction_rad)
+        );
+        cv::line(monitor_image, robot_pos, direction_end, cv::Scalar(0,0,0), 2);
+    }
 
     // 显示
     cv::imshow("result", image_show);
@@ -1024,6 +1268,10 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     cv::imshow("match_result", image_match_result);
     cv::imshow("定位", monitor_image);
     cv::waitKey(1);
+
+    if (have_valid_pose) {
+        publishRobotPose(msg->header.stamp);
+    }
 }
 
 // 添加重定位回调函数
@@ -1094,7 +1342,7 @@ int main(int argc, char** argv) {
     cv::resize(resultImage, field_image, cv::Size(resultImage.cols/2, resultImage.rows/2));
     
     // 初始化monitor_image，大小与field_image相同
-    monitor_image = cv::Mat(field_image.rows + 50, field_image.cols, CV_8UC3);
+    monitor_image = cv::Mat(field_image.rows + MONITOR_INFO_HEIGHT, field_image.cols, CV_8UC3);
 
     
     // 读取参数
@@ -1102,10 +1350,18 @@ int main(int argc, char** argv) {
     std::string red_map_path = node->declare_parameter<std::string>("red_map_file", "");
     std::string blue_map_path = node->declare_parameter<std::string>("blue_map_file", "");
     use_odom_for_tracking = node->declare_parameter<bool>("use_odom_for_tracking", false);
+    use_safety_axis_constraint = node->declare_parameter<bool>("use_safety_axis_constraint", false);
+    std::string image_topic = node->declare_parameter<std::string>("image_topic", "/omni_camera/image_raw");
+    std::string odom_topic = node->declare_parameter<std::string>("odom_topic", "/odom");
+    std::string reloc_pose_topic = node->declare_parameter<std::string>("reloc_pose_topic", "/reloc_pose");
+    std::string pose_topic = node->declare_parameter<std::string>("pose_topic", "/robot/pose");
+    pose_frame_id = node->declare_parameter<std::string>("pose_frame_id", "map");
     // 读取图像为灰度图
     image_lines_map = cv::imread(lines_map_path, cv::IMREAD_GRAYSCALE);
     image_red_map = cv::imread(red_map_path, cv::IMREAD_GRAYSCALE);
     image_blue_map = cv::imread(blue_map_path, cv::IMREAD_GRAYSCALE);
+    red_map_axis = estimateAxisFromMap(image_red_map);
+    blue_map_axis = estimateAxisFromMap(image_blue_map);
 
     // 检查图像是否成功加载
     if(image_lines_map.empty() || image_red_map.empty() || image_blue_map.empty() ||
@@ -1113,17 +1369,22 @@ int main(int argc, char** argv) {
         ROS_ERROR("场线模板读取失败！");
         return -1;
     }
+    if (red_map_axis.valid) {
+        ROS_INFO("红色安全区地图主轴: %.1f deg, confidence=%.2f", red_map_axis.angle_deg, red_map_axis.confidence);
+    }
+    if (blue_map_axis.valid) {
+        ROS_INFO("蓝色安全区地图主轴: %.1f deg, confidence=%.2f", blue_map_axis.angle_deg, blue_map_axis.confidence);
+    }
+
+    pose_pub = node->create_publisher<geometry_msgs::msg::PoseStamped>(pose_topic, 10);
 
     auto sub = node->create_subscription<sensor_msgs::msg::Image>(
-        "/omni_camera/image_raw", 1, imageCallback);
+        image_topic, 1, imageCallback);
     // 添加重定位话题订阅
     auto reloc_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(
-        "/reloc_pose", 1, relocCallback);
-    rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub;
-    if (use_odom_for_tracking) {
-        odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(
-            "/odom", 10, odomCallback);
-    }
+        reloc_pose_topic, 1, relocCallback);
+    auto odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(
+        odom_topic, 10, odomCallback);
 
     rclcpp::spin(node);
     rclcpp::shutdown();

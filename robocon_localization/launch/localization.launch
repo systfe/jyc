@@ -30,7 +30,7 @@
     <param name="output_height" value="480"/>
     <param name="inner_radius_ratio" value="0.00"/>
     <param name="outer_radius_ratio" value="0.98"/>
-    <param name="mirror_curve" value="2.12"/>
+    <param name="mirror_curve" value="2.00"/>
     <param name="source_radius_ratio" value="0.98"/>
     <param name="radial_k1" value="0.00"/>
     <param name="radial_k2" value="0.00"/>
@@ -55,6 +55,12 @@
     <param name= "red_map_file" value="$(find-pkg-share robocon_localization)/config/red_lines.png"/>
     <param name= "blue_map_file" value="$(find-pkg-share robocon_localization)/config/blue_lines.png"/>
     <param name= "use_odom_for_tracking" value="false"/>
+    <param name= "use_safety_axis_constraint" value="false"/>
+    <param name= "image_topic" value="/omni_camera/image_raw"/>
+    <param name= "odom_topic" value="/odom"/>
+    <param name= "reloc_pose_topic" value="/reloc_pose"/>
+    <param name= "pose_topic" value="/robot/pose"/>
+    <param name= "pose_frame_id" value="map"/>
   </node>
 
   <!-- 启动 relocalization 重定位节点 -->
