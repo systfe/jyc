@@ -44,19 +44,8 @@ add_robocon_node(calibrate_dist
   src/calibrate_dist.cpp
 )
 
-add_robocon_node(table_dist
-  src/table_dist.cpp
-  src/utility/distance_lookup.cpp
-)
-
 add_robocon_node(hsv_adjust
   src/hsv_adjust.cpp
-)
-
-add_robocon_node(localization
-  src/localization.cpp
-  src/utility/distance_lookup.cpp
-  src/utility/lines_map.cpp
 )
 
 add_robocon_node(load_lines_map
@@ -70,13 +59,6 @@ add_robocon_node(omni_mirror_sim
 
 add_robocon_node(loc_sidelines
   src/loc_sidelines.cpp
-  src/utility/distance_lookup.cpp
-  src/utility/lines_map.cpp
-  src/utility/lines_matcher.cpp
-)
-
-add_robocon_node(relocalization
-  src/relocalization.cpp
   src/utility/distance_lookup.cpp
   src/utility/lines_map.cpp
   src/utility/lines_matcher.cpp

@@ -35,7 +35,6 @@ def generate_launch_description():
                 'odom_topic': odom_topic,
                 'pose_topic': '/robot/pose',
                 'pose_frame_id': 'map',
-                'reloc_pose_topic': '/reloc_pose',
                 'use_odom_for_tracking': use_odom_for_tracking,
                 'use_safety_axis_constraint': False,
             }],

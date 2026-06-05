@@ -1,26 +1,19 @@
-# 救援车定位与控制项目说明
+# 救援车
+通过鱼眼相机进行纯视觉定位的小车。
 
-本工作区位于：
+# 各包作用
 
-```bash
-/home/cst/jyc
-```
-
-源码目录位于：
-
-```bash
-/home/cst/jyc/src
-```
-
-项目当前适配 ROS 2 Humble + Gazebo Classic 11，目标是在 `3m x 3m` 场地中完成仿真、全景相机模拟、纯视觉定位、统一接口桥接和上层 Python 控制。
-
-定位原则：小车定位必须使用纯视觉。里程计只允许作为显示、调试和对比参考，不能用于修正视觉定位。代码中 `use_odom_for_tracking` 默认应保持 `false`。
-
-## 一、包的作用
-
-### `robocon25_sim`
+## `robocon25_sim`
 
 仿真环境包。
+
+功能：
+
+- 启动 `3m x 3m` 场地。
+- 生成机器人实体。
+- 订阅 `/cmd_vel` 控制机器人运动。
+- 发布 `/odom` 作为仿真里程计参考。
+
 
 主要内容：
 
@@ -34,15 +27,7 @@ robocon25_sim/
 ├── src/cmd_vel_model_plugin.cpp        Gazebo 速度控制插件
 └── launch/                             Gazebo 启动文件
 ```
-
-功能：
-
-- 启动 `3m x 3m` 场地。
-- 生成机器人实体。
-- 订阅 `/cmd_vel` 控制机器人运动。
-- 发布 `/odom` 作为仿真里程计参考。
-
-### `robocon_localization`
+## `robocon_localization`
 
 视觉定位核心包。
 
@@ -68,20 +53,17 @@ robocon_localization/
 │   ├── load_lines_map.cpp              生成匹配模板图
 │   ├── calibrate_dist.cpp              距离标定节点
 │   ├── hsv_adjust.cpp                  HSV 调试节点
-│   ├── relocalization.cpp              重定位辅助节点
-│   ├── localization.cpp                早期定位节点
 │   └── utility/                        距离、地图、匹配工具实现
 └── launch/
-    ├── localization.launch             旧版完整仿真入口
-    ├── loc_sidelines.launch            定位节点测试入口
+    ├── localization.launch             底层完整仿真定位入口
     ├── calibrate_dist.launch           距离标定入口
     ├── hsv_adjust.launch               HSV 调试入口
-    └── test_*.launch                   测试入口
+    └── spawn_robot_start.launch.py     出发点生成入口
 ```
 
 当前主节点是 `loc_sidelines`。它订阅全景图像，提取场地颜色特征，投影到场地坐标，和模板图匹配，最后发布 `/robot/pose`。
 
-### `robot_bringup`
+## `robot_bringup`
 
 统一启动和接口桥接包。
 
@@ -101,20 +83,108 @@ robot_bringup/
 - 实物时只启动视觉定位节点。
 - 给控制层提供统一话题，避免控制代码区分仿真和实物。
 
-### `robot_control`
+## `robot_control`
 
-上层 Python 控制代码目录。
+- 作用：控制层 Python 包。
+- 在此包内编写控制逻辑。
 
-当前内容：
 
-```text
-robot_control/
-└── src/
-    ├── DriveControl.py                 PurePursuit 控制器
-    └── main.py                         示例控制程序
+
+
+# 使用方法
+
+首先下载该仓库到本地，并配置 ROS 2 环境变量：
+
+```bash
+git clone https://github.com/systfe/jyc.git
 ```
 
-当前 `robot_control` 目录只是普通 Python 脚本目录，不是完整 ROS 2 package。它通过统一接口读取 `/robot/pose` 并发布 `/robot/cmd_vel`。
+接着打开 `~/.bashrc`，并添加以下内容：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /usr/share/gazebo-11/setup.bash
+source [你的项目路径]/jyc/install/setup.bash
+```
+
+## 编译
+
+在终端中打开你的项目路径，并运行以下命令：
+
+```bash
+colcon build
+source install/setup.bash
+```
+或者
+```bash
+cd [你的项目路径]/jyc
+colcon build
+source install/setup.bash
+```
+
+## 启动
+
+```bash
+ros2 launch robot_bringup real_localization.launch.py
+```
+
+参数 `image_topic`: 摄像头发布的话题，默认是 `/robot/image_raw`。
+参数 `odom_topic`: 底盘里程计发布的话题，默认是 `/robot/odom`。
+例:
+```bash
+ros2 launch robot_bringup real_localization.launch.py image_topic:=/camera/image_raw odom_topic:=/wheel/odom
+```
+表示启动时使用 `/camera/image_raw` 作为图像话题，使用 `/wheel/odom` 作为里程计话题。
+
+
+## 仿真启动
+
+```bash
+ros2 launch robot_bringup sim.launch.py start_point:=1
+```
+
+参数`start_point` 可取 `1/2/3/4`，分别代表四个出发点，默认是 `1`。
+
+启动前如果 Gazebo 状态异常，可以先清理旧进程：
+
+```bash
+pkill -9 -f gzserver
+pkill -9 -f gzclient
+pkill -9 -f calibrate_dist
+pkill -9 -f omni_mirror_sim
+```
+
+启动后会包含：
+
+- Gazebo 场地和小车。
+
+## 移动控制
+ - 用 rqt 手动控制：
+
+```bash
+ros2 run rqt_robot_steering rqt_robot_steering
+```
+仿真统一入口下，话题选择`/robot/cmd_vel`
+
+
+ - 用键盘手动控制：
+
+```bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard /cmd_vel:=/cmd_vel
+```
+
+
+## 控制层使用
+
+
+
+
+直接启动 `robocon_localization localization.launch` 时，话题选择：
+
+```text
+/cmd_vel
+```
+
 
 ## 二、统一接口
 
@@ -145,162 +215,6 @@ robot_control/
 
 控制代码不要直接依赖这些原始话题。
 
-## 三、编译
-
-完整编译：
-
-```bash
-cd /home/cst/jyc
-source /opt/ros/humble/setup.bash
-colcon build
-source install/setup.bash
-```
-
-只编译定位和启动相关包：
-
-```bash
-cd /home/cst/jyc
-source /opt/ros/humble/setup.bash
-colcon build --packages-select robocon_localization robot_bringup
-source install/setup.bash
-```
-
-如果修改了 Gazebo 插件：
-
-```bash
-cd /home/cst/jyc
-source /opt/ros/humble/setup.bash
-colcon build --packages-select robocon25_sim
-source install/setup.bash
-```
-
-每次新终端运行前都要：
-
-```bash
-source /opt/ros/humble/setup.bash
-source /home/cst/jyc/install/setup.bash
-```
-
-## 四、仿真启动
-
-推荐入口是 `robot_bringup`：
-
-```bash
-source /opt/ros/humble/setup.bash
-source /home/cst/jyc/install/setup.bash
-ros2 launch robot_bringup sim.launch.py start_point:=1
-```
-
-`start_point` 可取 `1/2/3/4`，默认是 `1`。
-
-启动前如果 Gazebo 状态异常，可以先清理旧进程：
-
-```bash
-pkill -f gzserver
-pkill -f gzclient
-```
-
-仿真启动后会包含：
-
-- Gazebo 场地和小车。
-- `omni_mirror_sim`：把仿真普通相机图像转换成模拟全景图。
-- `loc_sidelines`：纯视觉定位。
-- `relocalization`：重定位辅助。
-- `interface_bridge`：把仿真原始话题桥接成 `/robot/*`。
-
-旧入口也可以使用：
-
-```bash
-ros2 launch robocon_localization localization.launch start_point:=1
-```
-
-区别是旧入口不启动 `interface_bridge`，控制话题需要直接使用 `/cmd_vel`。
-
-## 五、实物启动
-
-实物不启动 Gazebo，也不启动 `omni_mirror_sim`。真实鱼眼相机需要由摄像头驱动发布图像。
-
-如果摄像头已经发布到 `/robot/image_raw`：
-
-```bash
-source /opt/ros/humble/setup.bash
-source /home/cst/jyc/install/setup.bash
-ros2 launch robot_bringup real_localization.launch.py
-```
-
-如果摄像头发布到其他话题，例如 `/camera/image_raw`：
-
-```bash
-ros2 launch robot_bringup real_localization.launch.py image_topic:=/camera/image_raw
-```
-
-如果底盘里程计发布到其他话题，例如 `/wheel/odom`：
-
-```bash
-ros2 launch robot_bringup real_localization.launch.py odom_topic:=/wheel/odom
-```
-
-注意：
-
-- 实物鱼眼相机必须重新标定 `dist_table.txt`。
-- 实物光照会影响 HSV 阈值，第一次上车建议先看 `result` 窗口和 HSV 调试工具。
-- `use_odom_for_tracking` 保持 `false`，定位仍然纯视觉。
-
-## 六、控制层使用
-
-`robot_control/src/DriveControl.py` 提供了一个简单控制器 `PurePursuit`。
-
-它使用：
-
-```text
-订阅：/robot/pose
-发布：/robot/cmd_vel
-```
-
-运行示例：
-
-```bash
-source /opt/ros/humble/setup.bash
-source /home/cst/jyc/install/setup.bash
-cd /home/cst/jyc/src/robot_control/src
-python3 main.py
-```
-
-常用函数：
-
-```python
-drive.Print_pose()
-drive.Move(x, y, target_yaw_deg=None)
-drive.Move_relative(dx, dy)
-drive.Turn_to(target_yaw_deg)
-drive.Turn_by(delta_yaw_deg)
-drive.stop()
-```
-
-坐标约定：
-
-- `/robot/pose` 的 `x/y` 单位是米。
-- `yaw` 外部显示和调用时一般用度，内部计算用弧度。
-- `Move(x, y)` 是地图绝对坐标。
-- `Move_relative(dx, dy)` 默认是车体坐标：`dx > 0` 向前，`dy > 0` 向左。
-
-用 rqt 手动控制：
-
-```bash
-ros2 run rqt_robot_steering rqt_robot_steering
-```
-
-仿真统一入口下，话题选择：
-
-```text
-/robot/cmd_vel
-```
-
-旧 `localization.launch` 入口下，话题选择：
-
-```text
-/cmd_vel
-```
 
 ## 七、定位原理
 
@@ -613,7 +527,7 @@ ros2 launch robocon_localization hsv_adjust.launch
 
 - 检查 `/robot/cmd_vel` 是否有速度。
 - 检查仿真入口是否启动了 `interface_bridge`。
-- 旧入口要发 `/cmd_vel`，新入口要发 `/robot/cmd_vel`。
+- 底层 `robocon_localization localization.launch` 要发 `/cmd_vel`，统一 `robot_bringup sim.launch.py` 要发 `/robot/cmd_vel`。
 
 ### 5. 安全区附近错位
 
@@ -625,18 +539,13 @@ ros2 launch robocon_localization hsv_adjust.launch
 
 ## 十三、常见问题
 
-### 修改代码后运行没有变化
+### 1. `package 'gazebo_ros' not found` 仿真启动失败
 
-重新编译并 source：
-
-```bash
-cd /home/cst/jyc
-source /opt/ros/humble/setup.bash
-colcon build --packages-select robocon_localization
-source install/setup.bash
+/opt/ros/humble 里没有 gazebo_ros
+``` bash
+sudo apt update
+sudo apt install ros-humble-gazebo-ros-pkgs
 ```
-
-如果 Gazebo 插件也改了，编译 `robocon25_sim`。
 
 ### Gazebo 状态异常
 
@@ -680,11 +589,3 @@ ros2 run robocon_localization load_lines_map --ros-args \
 
 否则运行时识别和模板图可能不一致。
 
-## 十四、开发注意
-
-- 控制层只使用 `/robot/*`，不要直接依赖仿真原始话题。
-- 纯视觉定位时 `use_odom_for_tracking=false`。
-- `white_lines.png` 是历史命名，不代表白线。
-- 改 `loc_sidelines.cpp` 后只需编译 `robocon_localization`。
-- 改 Gazebo 插件后需要编译 `robocon25_sim` 并重启 Gazebo。
-- 改模板生成逻辑后必须重新运行 `load_lines_map`。

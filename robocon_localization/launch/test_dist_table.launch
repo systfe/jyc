@@ -1,9 +1,0 @@
-<launch>
-
-  <node name="table_dist" pkg="robocon_localization" exec="table_dist" output="screen">
-    <param name= "table_file" value="$(find-pkg-share robocon_localization)/config/dist_table.txt" />
-  </node>
-
-</launch>
-
-

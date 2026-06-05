@@ -1509,25 +1509,6 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     }
 }
 
-// 添加重定位回调函数
-void relocCallback(const geometry_msgs::msg::PoseStamped::ConstSharedPtr& msg)
-{
-    float pose_x = msg->pose.position.x * pixelsPerMeterX();
-    float pose_y = -msg->pose.position.y * pixelsPerMeterY();
-    
-    // 从四元数转换为欧拉角(yaw)
-    double roll, pitch, yaw;
-    tf2::Quaternion q(
-        msg->pose.orientation.x,
-        msg->pose.orientation.y,
-        msg->pose.orientation.z,
-        msg->pose.orientation.w);
-    tf2::Matrix3x3(q).getRPY(roll, pitch, yaw);
-    float pose_yaw = -yaw * 180.0 / M_PI;  // 转换为图像坐标系角度
-    setVisualInitialPose(pose_x, pose_y, pose_yaw);
-    ROS_WARN("重新定位: ( %.2f,  %.2f) yaw: %.2f", counter_x, counter_y, counter_yaw);
-}
-
 void odomCallback(const nav_msgs::msg::Odometry::ConstSharedPtr& msg)
 {
     odom_x = msg->pose.pose.position.x;
@@ -1588,7 +1569,6 @@ int main(int argc, char** argv) {
     use_safety_axis_constraint = node->declare_parameter<bool>("use_safety_axis_constraint", false);
     std::string image_topic = node->declare_parameter<std::string>("image_topic", "/omni_camera/image_raw");
     std::string odom_topic = node->declare_parameter<std::string>("odom_topic", "/odom");
-    std::string reloc_pose_topic = node->declare_parameter<std::string>("reloc_pose_topic", "/reloc_pose");
     std::string pose_topic = node->declare_parameter<std::string>("pose_topic", "/robot/pose");
     pose_frame_id = node->declare_parameter<std::string>("pose_frame_id", "map");
     // 读取图像为灰度图
@@ -1615,9 +1595,6 @@ int main(int argc, char** argv) {
 
     auto sub = node->create_subscription<sensor_msgs::msg::Image>(
         image_topic, 1, imageCallback);
-    // 添加重定位话题订阅
-    auto reloc_sub = node->create_subscription<geometry_msgs::msg::PoseStamped>(
-        reloc_pose_topic, 1, relocCallback);
     auto odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(
         odom_topic, 10, odomCallback);
 
