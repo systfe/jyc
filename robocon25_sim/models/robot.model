@@ -165,8 +165,8 @@
 <gazebo>
   <plugin name="base_controller" filename="librobocon_cmd_vel_model_plugin.so">
     <ros>
-      <remapping>cmd_vel:=cmd_vel</remapping>
-      <remapping>odom:=odom</remapping>
+      <remapping>cmd_vel:=/robot/cmd_vel</remapping>
+      <remapping>odom:=/robot/odom</remapping>
     </ros>
     <publish_rate>30</publish_rate>
     <cmd_timeout>0.25</cmd_timeout>

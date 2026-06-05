@@ -25,7 +25,7 @@
 
   <node name="omni_mirror_sim" pkg="robocon_localization" exec="omni_mirror_sim" output="screen">
     <param name="input_topic" value="/sim_camera/image_raw"/>
-    <param name="output_topic" value="/omni_camera/image_raw"/>
+    <param name="output_topic" value="/robot/image_raw"/>
     <param name="output_width" value="640"/>
     <param name="output_height" value="480"/>
     <param name="inner_radius_ratio" value="0.00"/>
@@ -40,6 +40,8 @@
   </node>
 
   <!-- 启动距离标定节点 -->
-  <node name="calibrate_dist" pkg="robocon_localization" exec="calibrate_dist" output="screen"/>
+  <node name="calibrate_dist" pkg="robocon_localization" exec="calibrate_dist" output="screen">
+    <param name="image_topic" value="/robot/image_raw"/>
+  </node>
 
 </launch>

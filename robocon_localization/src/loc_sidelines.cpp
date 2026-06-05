@@ -1567,8 +1567,8 @@ int main(int argc, char** argv) {
     std::string blue_map_path = node->declare_parameter<std::string>("blue_map_file", "");
     use_odom_for_tracking = node->declare_parameter<bool>("use_odom_for_tracking", false);
     use_safety_axis_constraint = node->declare_parameter<bool>("use_safety_axis_constraint", false);
-    std::string image_topic = node->declare_parameter<std::string>("image_topic", "/omni_camera/image_raw");
-    std::string odom_topic = node->declare_parameter<std::string>("odom_topic", "/odom");
+    std::string image_topic = node->declare_parameter<std::string>("image_topic", "/robot/image_raw");
+    std::string odom_topic = node->declare_parameter<std::string>("odom_topic", "/robot/odom");
     std::string pose_topic = node->declare_parameter<std::string>("pose_topic", "/robot/pose");
     pose_frame_id = node->declare_parameter<std::string>("pose_frame_id", "map");
     // 读取图像为灰度图

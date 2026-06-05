@@ -21,10 +21,11 @@
 
   <node name="omni_mirror_sim" pkg="robocon_localization" exec="omni_mirror_sim" output="screen">
     <param name="input_topic" value="/sim_camera/image_raw"/>
-    <param name="output_topic" value="/omni_camera/image_raw"/>
+    <param name="output_topic" value="/robot/image_raw"/>
   </node>
 
-  <node name="hsv_adjust" pkg="robocon_localization" exec="hsv_adjust" output="screen"/>
+  <node name="hsv_adjust" pkg="robocon_localization" exec="hsv_adjust" output="screen">
+    <param name="image_topic" value="/robot/image_raw"/>
+  </node>
 
 </launch>
-

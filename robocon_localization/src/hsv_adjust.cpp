@@ -63,8 +63,9 @@ int main(int argc, char **argv)
     rclcpp::init(argc, argv);
    
     auto node = std::make_shared<rclcpp::Node>("hsv_adjust");
+    std::string image_topic = node->declare_parameter<std::string>("image_topic", "/robot/image_raw");
     auto rgb_sub = node->create_subscription<sensor_msgs::msg::Image>(
-        "/omni_camera/image_raw", 1, Cam_RGB_Callback);
+        image_topic, 1, Cam_RGB_Callback);
 
     rclcpp::WallRate loop_rate(30);
 

@@ -3,15 +3,11 @@
 <package format="3">
   <name>robot_bringup</name>
   <version>0.0.0</version>
-  <description>Launch and interface bridge package for simulation and real robot bringup.</description>
+  <description>Unified simulation and real robot bringup launch package.</description>
   <maintainer email="1656189150@qq.com">cst</maintainer>
   <license>TODO</license>
 
-  <depend>geometry_msgs</depend>
-  <depend>nav_msgs</depend>
-  <depend>rclpy</depend>
   <depend>robocon_localization</depend>
-  <depend>sensor_msgs</depend>
 
   <exec_depend>robocon25_sim</exec_depend>
 

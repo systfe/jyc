@@ -1,58 +1,22 @@
 <launch>
+  <arg name="image_topic" default="/robot/image_raw"/>
+  <arg name="odom_topic" default="/robot/odom"/>
+  <arg name="pose_topic" default="/robot/pose"/>
+  <arg name="use_odom_for_tracking" default="false"/>
+  <arg name="use_safety_axis_constraint" default="false"/>
 
-  <!-- these are the arguments you can pass this launch file, for example paused:=true -->
-  <arg name="paused" default="false"/>
-  <arg name="use_sim_time" default="true"/>
-  <arg name="gui" default="true"/>
-  <arg name="headless" default="false"/>
-  <arg name="debug" default="false"/> 
-  <arg name="verbose" default="false"/>
-  <arg name="start_point" default="1"/>
-
-  <!-- We resume the logic in empty_world.launch, changing only the name of the world to be launched -->
-  <include file="$(find-pkg-share robocon25_sim)/launch/gazebo_no_eol.launch.py">
-    <arg name="world" value="$(find-pkg-share robocon25_sim)/worlds/robocon25.world"/>
-    <arg name="verbose" value="$(var verbose)"/>
-    <arg name="paused" value="$(var paused)"/>
-    <arg name="gui" value="$(var gui)"/>
-  </include>
-  
-  <!-- Spawn a robot into the selected 300mm start area. start_point: 1, 2, 3, or 4. -->
-  <include file="$(find-pkg-share robocon_localization)/launch/spawn_robot_start.launch.py">
-    <arg name="start_point" value="$(var start_point)"/>
-  </include>
-
-  <!-- 将 Gazebo 普通相机图像转换成模拟凸面镜全景图像 -->
-  <node name="omni_mirror_sim" pkg="robocon_localization" exec="omni_mirror_sim" output="screen">
-    <param name="input_topic" value="/sim_camera/image_raw"/>
-    <param name="output_topic" value="/omni_camera/image_raw"/>
-    <param name="output_width" value="640"/>
-    <param name="output_height" value="480"/>
-    <param name="inner_radius_ratio" value="0.00"/>
-    <param name="outer_radius_ratio" value="0.98"/>
-    <param name="mirror_curve" value="2.00"/>
-    <param name="source_radius_ratio" value="0.98"/>
-    <param name="radial_k1" value="0.00"/>
-    <param name="radial_k2" value="0.00"/>
-    <param name="center_x_ratio" value="0.50"/>
-    <param name="center_y_ratio" value="0.50"/>
-    <param name="flip_radial" value="false"/>
-  </node>
-
-  <!-- 纯视觉定位节点 -->
   <node name="loc_sidelines" pkg="robocon_localization" exec="loc_sidelines" output="screen">
-    <param name= "table_file" value="$(find-pkg-share robocon_localization)/config/dist_table.txt" />
-    <param name= "lines_file" value="$(find-pkg-share robocon_localization)/config/field_lines.png" />
-    <param name= "field_file" value="$(find-pkg-share robocon_localization)/config/field_bg.png" />
-    <param name= "lines_map_file" value="$(find-pkg-share robocon_localization)/config/white_lines.png"/>
-    <param name= "red_map_file" value="$(find-pkg-share robocon_localization)/config/red_lines.png"/>
-    <param name= "blue_map_file" value="$(find-pkg-share robocon_localization)/config/blue_lines.png"/>
-    <param name= "use_odom_for_tracking" value="false"/>
-    <param name= "use_safety_axis_constraint" value="false"/>
-    <param name= "image_topic" value="/omni_camera/image_raw"/>
-    <param name= "odom_topic" value="/odom"/>
-    <param name= "pose_topic" value="/robot/pose"/>
-    <param name= "pose_frame_id" value="map"/>
+    <param name="table_file" value="$(find-pkg-share robocon_localization)/config/dist_table.txt"/>
+    <param name="lines_file" value="$(find-pkg-share robocon_localization)/config/field_lines.png"/>
+    <param name="field_file" value="$(find-pkg-share robocon_localization)/config/field_bg.png"/>
+    <param name="lines_map_file" value="$(find-pkg-share robocon_localization)/config/white_lines.png"/>
+    <param name="red_map_file" value="$(find-pkg-share robocon_localization)/config/red_lines.png"/>
+    <param name="blue_map_file" value="$(find-pkg-share robocon_localization)/config/blue_lines.png"/>
+    <param name="use_odom_for_tracking" value="$(var use_odom_for_tracking)"/>
+    <param name="use_safety_axis_constraint" value="$(var use_safety_axis_constraint)"/>
+    <param name="image_topic" value="$(var image_topic)"/>
+    <param name="odom_topic" value="$(var odom_topic)"/>
+    <param name="pose_topic" value="$(var pose_topic)"/>
+    <param name="pose_frame_id" value="map"/>
   </node>
-
 </launch>

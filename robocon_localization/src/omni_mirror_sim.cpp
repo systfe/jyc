@@ -14,7 +14,7 @@ class OmniMirrorSim : public rclcpp::Node {
 public:
     OmniMirrorSim() : Node("omni_mirror_sim") {
         input_topic_ = declare_parameter<std::string>("input_topic", "/sim_camera/image_raw");
-        output_topic_ = declare_parameter<std::string>("output_topic", "/omni_camera/image_raw");
+        output_topic_ = declare_parameter<std::string>("output_topic", "/robot/image_raw");
         output_width_ = declare_parameter<int>("output_width", 640);
         output_height_ = declare_parameter<int>("output_height", 480);
         inner_radius_ratio_ = declare_parameter<double>("inner_radius_ratio", 0.05);

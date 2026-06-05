@@ -1,194 +1,109 @@
 # 救援车
-通过鱼眼相机进行纯视觉定位的小车。
 
-# 各包作用
+本项目用于 RoboCon 场地小车的仿真、纯视觉定位和上层控制。当前环境为 ROS 2 Humble + Gazebo Classic 11。
 
-## `robocon25_sim`
+核心约定：
+
+- 所有对外接口统一使用 `/robot/*`。
+- 定位必须是纯视觉，里程计只用于显示和对比参考。
+- 底层节点直接发布/订阅统一话题，不再使用桥接节点转换话题。
+- `robot_bringup` 是完整系统启动包，负责一次性启动仿真或实物定位，不再一层层套旧启动文件。
+
+## 包结构
+
+### `robocon25_sim`
 
 仿真环境包。
 
-功能：
-
-- 启动 `3m x 3m` 场地。
-- 生成机器人实体。
-- 订阅 `/cmd_vel` 控制机器人运动。
-- 发布 `/odom` 作为仿真里程计参考。
-
-
-主要内容：
-
 ```text
 robocon25_sim/
-├── worlds/robocon25.world              Gazebo 世界
-├── models/robot.model                  小车模型
-├── models/RoboCon25_Field/             场地模型
-├── materials/textures/lines.png        Gazebo 场地贴图
-├── meshes/robot.dae                    小车外观模型
-├── src/cmd_vel_model_plugin.cpp        Gazebo 速度控制插件
-└── launch/                             Gazebo 启动文件
+├── worlds/robocon25.world
+├── models/robot.model
+├── models/RoboCon25_Field/
+├── materials/textures/lines.png
+├── meshes/robot.dae
+├── src/cmd_vel_model_plugin.cpp
+└── launch/gazebo_no_eol.launch.py
 ```
-## `robocon_localization`
 
-视觉定位核心包。
+作用：
 
-主要内容：
+- 启动 Gazebo 场地和小车模型。
+- 小车插件直接订阅 `/robot/cmd_vel`。
+- 小车插件直接发布 `/robot/odom`。
+
+### `robocon_localization`
+
+视觉定位底层包。
 
 ```text
 robocon_localization/
 ├── config/
-│   ├── dist_table.txt                  像素半径到实际距离的标定表
-│   ├── field_lines.png                 定位使用的彩色线图
-│   ├── field_bg.png                    定位窗口背景图
-│   ├── white_lines.png                 洋红/紫色边缘模板，名字是历史遗留
-│   ├── red_lines.png                   红色安全区模板
-│   └── blue_lines.png                  蓝色安全区模板
+│   ├── dist_table.txt
+│   ├── field_lines.png
+│   ├── field_bg.png
+│   ├── white_lines.png
+│   ├── red_lines.png
+│   └── blue_lines.png
 ├── include/
-│   ├── distance_lookup.h               距离表查询接口
-│   ├── lines_map.h                     模板图生成接口
-│   ├── lines_matcher.h                 局部匹配接口
-│   └── ros2_compat.h                   ROS 日志兼容封装
-├── src/
-│   ├── loc_sidelines.cpp               当前主定位节点
-│   ├── omni_mirror_sim.cpp             仿真相机转全景图节点
-│   ├── load_lines_map.cpp              生成匹配模板图
-│   ├── calibrate_dist.cpp              距离标定节点
-│   ├── hsv_adjust.cpp                  HSV 调试节点
-│   └── utility/                        距离、地图、匹配工具实现
-└── launch/
-    ├── localization.launch             底层完整仿真定位入口
-    ├── calibrate_dist.launch           距离标定入口
-    ├── hsv_adjust.launch               HSV 调试入口
-    └── spawn_robot_start.launch.py     出发点生成入口
+├── launch/
+│   ├── localization.launch
+│   ├── calibrate_dist.launch
+│   └── hsv_adjust.launch
+└── src/
+    ├── loc_sidelines.cpp
+    ├── omni_mirror_sim.cpp
+    ├── load_lines_map.cpp
+    ├── calibrate_dist.cpp
+    ├── hsv_adjust.cpp
+    └── utility/
 ```
 
-当前主节点是 `loc_sidelines`。它订阅全景图像，提取场地颜色特征，投影到场地坐标，和模板图匹配，最后发布 `/robot/pose`。
+作用：
 
-## `robot_bringup`
+- `loc_sidelines`：主定位节点，订阅 `/robot/image_raw`，发布 `/robot/pose`。
+- `localization.launch`：只启动定位节点本身，用于单独接入已有图像和里程计话题。
+- `omni_mirror_sim`：仿真中把 `/sim_camera/image_raw` 转成 `/robot/image_raw`。
+- `load_lines_map`：根据 `field_lines.png` 生成匹配模板。
+- `calibrate_dist`：距离表标定。
+- `hsv_adjust`：颜色阈值调试。
 
-统一启动和接口桥接包。
+### `robot_bringup`
 
-主要内容：
+完整启动包。
 
 ```text
 robot_bringup/
 ├── launch/
-│   ├── sim.launch.py                   仿真统一启动入口
-│   └── real_localization.launch.py     实物定位启动入口
-└── robot_bringup/interface_bridge.py   仿真原始话题和 /robot/* 话题桥接
+│   ├── sim.launch.py
+│   └── real_localization.launch.py
+└── robot_bringup/__init__.py
 ```
 
-功能：
+作用：
 
-- 仿真时启动 Gazebo、机器人、全景相机模拟、视觉定位和接口桥接。
-- 实物时只启动视觉定位节点。
-- 给控制层提供统一话题，避免控制代码区分仿真和实物。
+- `sim.launch.py`：直接启动 Gazebo、小车、全景模拟和视觉定位。
+- `real_localization.launch.py`：实物只启动视觉定位。
+- 不再包含 `interface_bridge`，因为底层已经直接使用统一话题。
 
-## `robot_control`
+### `robot_control`
 
-- 作用：控制层 Python 包。
-- 在此包内编写控制逻辑。
-
-
-
-
-# 使用方法
-
-首先下载该仓库到本地，并配置 ROS 2 环境变量：
-
-```bash
-git clone https://github.com/systfe/jyc.git
-```
-
-接着打开 `~/.bashrc`，并添加以下内容：
-
-```bash
-source /opt/ros/humble/setup.bash
-source /usr/share/gazebo-11/setup.bash
-source [你的项目路径]/jyc/install/setup.bash
-```
-
-## 编译
-
-在终端中打开你的项目路径，并运行以下命令：
-
-```bash
-colcon build
-source install/setup.bash
-```
-或者
-```bash
-cd [你的项目路径]/jyc
-colcon build
-source install/setup.bash
-```
-
-## 启动
-
-```bash
-ros2 launch robot_bringup real_localization.launch.py
-```
-
-参数 `image_topic`: 摄像头发布的话题，默认是 `/robot/image_raw`。
-参数 `odom_topic`: 底盘里程计发布的话题，默认是 `/robot/odom`。
-例:
-```bash
-ros2 launch robot_bringup real_localization.launch.py image_topic:=/camera/image_raw odom_topic:=/wheel/odom
-```
-表示启动时使用 `/camera/image_raw` 作为图像话题，使用 `/wheel/odom` 作为里程计话题。
-
-
-## 仿真启动
-
-```bash
-ros2 launch robot_bringup sim.launch.py start_point:=1
-```
-
-参数`start_point` 可取 `1/2/3/4`，分别代表四个出发点，默认是 `1`。
-
-启动前如果 Gazebo 状态异常，可以先清理旧进程：
-
-```bash
-pkill -9 -f gzserver
-pkill -9 -f gzclient
-pkill -9 -f calibrate_dist
-pkill -9 -f omni_mirror_sim
-```
-
-启动后会包含：
-
-- Gazebo 场地和小车。
-
-## 移动控制
- - 用 rqt 手动控制：
-
-```bash
-ros2 run rqt_robot_steering rqt_robot_steering
-```
-仿真统一入口下，话题选择`/robot/cmd_vel`
-
-
- - 用键盘手动控制：
-
-```bash
-ros2 run teleop_twist_keyboard teleop_twist_keyboard /cmd_vel:=/cmd_vel
-```
-
-
-## 控制层使用
-
-
-
-
-直接启动 `robocon_localization localization.launch` 时，话题选择：
+Python 控制层。
 
 ```text
-/cmd_vel
+robot_control/src/
+├── DriveControl.py
+└── main.py
 ```
 
+控制层只使用：
 
-## 二、统一接口
+- 订阅 `/robot/pose`
+- 发布 `/robot/cmd_vel`
 
-上层控制层建议只使用这些话题：
+## 统一话题
+
+对外统一接口如下：
 
 ```text
 /robot/image_raw   sensor_msgs/msg/Image
@@ -197,178 +112,173 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard /cmd_vel:=/cmd_vel
 /robot/cmd_vel     geometry_msgs/msg/Twist
 ```
 
-含义：
+说明：
 
-- `/robot/image_raw`：统一图像入口。仿真时由 `/omni_camera/image_raw` 桥接而来；实物时由真实摄像头驱动发布或 remap 而来。
-- `/robot/pose`：视觉定位输出，单位为米，坐标系为 `map`。
-- `/robot/odom`：里程计参考。只用于显示和对比，不用于视觉定位修正。
-- `/robot/cmd_vel`：控制层速度命令。仿真时桥接到 Gazebo 的 `/cmd_vel`。
+- `/robot/image_raw`：定位图像。仿真由 `omni_mirror_sim` 发布，实物由真实相机发布或 remap。
+- `/robot/pose`：视觉定位结果，单位米，坐标系 `map`。
+- `/robot/odom`：里程计参考，只用于显示对比。
+- `/robot/cmd_vel`：控制命令，仿真和实物控制层都发这个话题。
 
-仿真内部原始话题：
+仿真内部仍有 `/sim_camera/image_raw`，这是 Gazebo 原始相机图像，只作为 `omni_mirror_sim` 的输入，不建议控制层使用。
 
-```text
-/sim_camera/image_raw
-/omni_camera/image_raw
-/cmd_vel
-/odom
+## 编译
+
+```bash
+cd /home/cst/jyc
+source /opt/ros/humble/setup.bash
+colcon build
+source install/setup.bash
 ```
 
-控制代码不要直接依赖这些原始话题。
+只编译当前相关包：
 
-
-## 七、定位原理
-
-当前主定位流程在 `robocon_localization/src/loc_sidelines.cpp` 中。
-
-### 1. 图像输入
-
-仿真中：
-
-```text
-/sim_camera/image_raw -> omni_mirror_sim -> /omni_camera/image_raw
+```bash
+cd /home/cst/jyc
+source /opt/ros/humble/setup.bash
+colcon build --packages-select robocon25_sim robocon_localization robot_bringup
+source install/setup.bash
 ```
 
-`loc_sidelines` 默认订阅 `/omni_camera/image_raw`。
+## 仿真启动
 
-实物中：
-
-```text
-真实鱼眼相机 -> /robot/image_raw -> loc_sidelines
+```bash
+source /opt/ros/humble/setup.bash
+source /home/cst/jyc/install/setup.bash
+ros2 launch robot_bringup sim.launch.py start_point:=1
 ```
 
-### 2. 颜色分割
+`start_point` 可取 `1/2/3/4`，默认 `1`。
 
-图像转换到 HSV 后提取这些区域：
+如果 Gazebo 状态异常，先清理：
 
-- 洋红：出发区。
-- 紫色：安全区边框。
-- 黑色：安全区中间分割线。
-- 红色：红色安全区。
-- 蓝色：蓝色安全区。
+```bash
+pkill -f gzserver
+pkill -f gzclient
+```
 
-蓝色和紫色 Hue 很接近，因此代码中使用 HSV 候选 + BGR 通道门槛做蓝紫互斥，避免紫色边框被识别成蓝色安全区。
+仿真启动后直接使用统一话题：
 
-主要位置：
+```bash
+ros2 topic echo /robot/pose
+ros2 topic echo /robot/odom
+ros2 topic pub /robot/cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.2}}"
+```
+
+## 实物启动
+
+实物侧要求相机发布到 `/robot/image_raw`，底盘里程计发布到 `/robot/odom`。
+
+默认启动：
+
+```bash
+source /opt/ros/humble/setup.bash
+source /home/cst/jyc/install/setup.bash
+ros2 launch robot_bringup real_localization.launch.py
+```
+
+如果实物相机或里程计话题不同，可以启动时指定：
+
+```bash
+ros2 launch robot_bringup real_localization.launch.py image_topic:=/camera/image_raw odom_topic:=/wheel/odom
+```
+
+这只是让定位节点订阅指定输入；定位输出仍是 `/robot/pose`。
+
+## 控制层使用
+
+手动控制：
+
+```bash
+ros2 run rqt_robot_steering rqt_robot_steering
+```
+
+话题选择：
+
+```text
+/robot/cmd_vel
+```
+
+键盘控制示例：
+
+```bash
+ros2 run teleop_twist_keyboard teleop_twist_keyboard /cmd_vel:=/robot/cmd_vel
+```
+
+Python 控制示例：
+
+```bash
+cd /home/cst/jyc/src/robot_control/src
+python3 main.py
+```
+
+常用接口：
+
+```python
+drive.Print_pose()
+drive.Move(x, y, target_yaw_deg=None)
+drive.Move_relative(dx, dy)
+drive.Turn_to(target_yaw_deg)
+drive.Turn_by(delta_yaw_deg)
+drive.stop()
+```
+
+## 定位原理
+
+当前主流程在：
 
 ```text
 robocon_localization/src/loc_sidelines.cpp
-robocon_localization/src/utility/lines_map.cpp
 ```
 
-### 3. 射线扫描和距离表
+流程：
 
-以图像中心为原点，每 `1deg` 扫描一条射线。
+1. 订阅 `/robot/image_raw`。
+2. HSV/BGR 分割洋红、紫色、黑色、红色、蓝色区域。
+3. 从图像中心按 `1deg` 射线扫描颜色边缘。
+4. 用 `dist_table.txt` 把像素半径换成真实距离。
+5. 将检测点投影到 `3m x 3m` 场地坐标。
+6. 和 `white_lines.png`、`red_lines.png`、`blue_lines.png` 模板匹配。
+7. 通过局部搜索更新视觉位姿。
+8. 匹配质量不足时进入 `hold`，保持上一帧位姿。
 
-射线遇到颜色边缘后，得到：
+注意：
 
-```text
-角度 angle
-像素半径 length
-```
+- `white_lines.png` 是历史命名，实际表示洋红/紫色边缘模板。
+- `/robot/odom` 不参与定位，只在窗口中对比显示。
 
-再用 `dist_table.txt` 把像素半径转换成真实距离：
+## 窗口说明
 
-```text
-实际距离m : 图像半径像素
-```
+### `result`
 
-示例：
+显示原始图像上的颜色检测和边缘 X 标记。
 
-```text
-0.0 : 0
-0.1 : 50
-0.2 : 70
-```
+如果没有 X：
 
-最后把极坐标点投影到 `3m x 3m` 场地坐标中。
+- 检查摄像头图像。
+- 检查 HSV/BGR 阈值。
+- 使用 `hsv_adjust.launch` 调色。
 
-### 4. 模板匹配
+### `match_result`
 
-定位使用三类模板：
+显示场地图和投影点。
 
-```text
-white_lines.png  洋红/紫色边缘模板，名字是历史遗留
-red_lines.png    红色安全区模板
-blue_lines.png   蓝色安全区模板
-```
-
-模板由 `load_lines_map` 从 `field_lines.png` 生成。
-
-匹配时会把当前帧投影点旋转和平移到候选位姿，再到模板图上取分数。分数越高，说明当前视觉点云越接近场地图中的真实线条。
-
-### 5. 连续跟踪
-
-定位初始化成功后，每帧围绕上一帧位姿做局部搜索：
-
-- 小范围搜索 yaw。
-- 小范围搜索 x/y。
-- 用洋红、紫色、黑线、红区、蓝区分别细化。
-- 如果一帧内位置或 yaw 跳变过大，就回退到上一帧。
-
-这是纯视觉连续性约束，不是里程计融合。
-
-### 6. 匹配质量闸门
-
-现在定位器会统计：
-
-```text
-真正落到模板附近的点数 / 当前检测到的特征点数
-```
-
-如果检测点很多，但没有点真正匹配模板，状态会变成 `hold`，本帧不会更新位姿。这样可以避免靠近安全区时“点云跟着小车走”。
-
-`match_result` 左上角会显示：
+左上角会显示：
 
 ```text
 match tracking 12/60 score=...
 match hold 0/60 score=...
 ```
 
-含义：
-
-- `tracking`：当前帧匹配质量足够，允许更新定位。
-- `hold`：当前帧匹配质量不足，保持上一帧定位。
-
-## 八、窗口含义
-
-### `result`
-
-显示原始图像上的颜色边缘检测结果。
-
-如果这里没有 X 标记，优先检查：
-
-- 摄像头图像是否正常。
-- HSV 阈值是否适合当前光照。
-- 图像中心是否被小车自身遮挡。
-
-### `match_result`
-
-显示场地图背景和投影后的特征点。
-
-常见颜色：
-
-- 绿色点：洋红/紫色边缘综合点。
-- 红色点：红色安全区点。
-- 蓝色点：蓝色安全区点。
-
-左上角 `match tracking/hold` 是最重要的调试信息。
+- `tracking`：当前帧匹配质量足够，允许更新位姿。
+- `hold`：检测点没有有效匹配模板，本帧不更新位姿。
 
 ### `定位`
 
-显示视觉定位出的机器人位置和朝向，同时显示里程计参考。
+显示视觉定位位置和里程计参考。
 
-注意：里程计只用于参考显示，不参与定位。
+## 生成模板图
 
-## 九、生成模板图
-
-修改以下内容后需要重新生成模板：
-
-- `field_lines.png`
-- 颜色阈值
-- 模板边缘半径
-- 蓝紫分离逻辑
-
-命令：
+修改颜色阈值、模板生成逻辑或 `field_lines.png` 后，需要重新生成模板：
 
 ```bash
 cd /home/cst/jyc
@@ -379,7 +289,7 @@ ros2 run robocon_localization load_lines_map --ros-args \
   -p lines_file:=/home/cst/jyc/src/robocon_localization/config/field_lines.png
 ```
 
-生成结果：
+生成：
 
 ```text
 robocon_localization/config/white_lines.png
@@ -387,7 +297,7 @@ robocon_localization/config/red_lines.png
 robocon_localization/config/blue_lines.png
 ```
 
-## 十、距离标定
+## 距离标定
 
 距离表：
 
@@ -395,197 +305,56 @@ robocon_localization/config/blue_lines.png
 robocon_localization/config/dist_table.txt
 ```
 
-启动标定：
-
-```bash
-source /opt/ros/humble/setup.bash
-source /home/cst/jyc/install/setup.bash
-ros2 launch robocon_localization calibrate_dist.launch
-```
-
-指定红球实际距离：
+仿真标定：
 
 ```bash
 ros2 launch robocon_localization calibrate_dist.launch red_ball_x:=0.9
 ```
 
-建议标定到至少 `2.2m`，因为场地中心到角落约 `2.12m`。如果距离表只覆盖近距离，远处点只能靠外推，投影容易整体偏小或偏大。
+实物标定时，应让真实相机发布 `/robot/image_raw`，然后运行标定节点或对应 launch。
 
-修改距离表后不需要重新生成模板，只需要重启定位节点。
+建议距离表覆盖到至少 `2.2m`。场地中心到角落约 `2.12m`，距离表太短会导致远处点只能外推，定位容易偏。
 
-## 十一、关键调试参数
-
-### `projection_scale_correction`
-
-位置：
-
-```text
-robocon_localization/src/loc_sidelines.cpp
-```
-
-作用：修正投影距离比例。
-
-现象：
-
-- 点云整体比真实距离小：适当调大。
-- 点云整体比真实距离大：适当调小。
-
-修改后需要重新编译。
-
-### `dist_table.txt`
-
-作用：像素半径到实际距离的映射。
-
-现象：
-
-- 近处准、远处不准：距离表远距离点不足。
-- 所有距离都偏：距离表或 `projection_scale_correction` 有问题。
-
-### 蓝紫阈值
-
-位置：
-
-```text
-createSeparatedBluePurpleMasks()
-```
-
-文件：
-
-```text
-robocon_localization/src/loc_sidelines.cpp
-robocon_localization/src/utility/lines_map.cpp
-```
-
-现象：
-
-- 紫色边框被识别成蓝色：收紧蓝色亮度/饱和度门槛，或放宽紫色门槛。
-- 蓝色安全区识别不到：放宽蓝色门槛。
-
-改完后需要重新生成模板图。
-
-### 匹配质量闸门
-
-位置：
-
-```text
-isMatchQualityAcceptable()
-countMatchedPointsOnMap()
-```
-
-现象：
-
-- `match hold 0/很多点`：检测点多，但没有真正落到模板上，检查距离表和投影比例。
-- 一直 `hold`：匹配阈值可能太严，或模板/距离表不对。
-- 明显不匹配还 `tracking`：阈值可能太松。
-
-## 十二、推荐调试流程
-
-### 1. 先确认话题
-
-```bash
-ros2 topic list
-ros2 topic echo /robot/pose
-ros2 topic echo /robot/odom
-ros2 topic hz /robot/image_raw
-```
-
-仿真中也可以检查原始话题：
-
-```bash
-ros2 topic echo /odom
-ros2 topic hz /omni_camera/image_raw
-```
-
-### 2. 看 `result`
-
-如果 `result` 没有 X：
-
-- 检查摄像头图像。
-- 检查 HSV 阈值。
-- 使用 `hsv_adjust.launch` 辅助调色。
+## HSV 调试
 
 ```bash
 ros2 launch robocon_localization hsv_adjust.launch
 ```
 
-### 3. 看 `match_result`
+默认读取 `/robot/image_raw`。
 
-如果 `result` 有 X，但 `match_result` 点位置不对：
+## 常用调试顺序
 
-- 检查 `dist_table.txt`。
-- 调整 `projection_scale_correction`。
-- 确认 `field_lines.png` 和 Gazebo 贴图一致。
-
-如果左上角一直 `hold`：
-
-- 当前检测点没有真正匹配模板。
-- 先不要放松阈值，优先检查投影距离和模板图。
-
-### 4. 看 `定位`
-
-如果视觉位置准，但控制不动：
-
-- 检查 `/robot/cmd_vel` 是否有速度。
-- 检查仿真入口是否启动了 `interface_bridge`。
-- 底层 `robocon_localization localization.launch` 要发 `/cmd_vel`，统一 `robot_bringup sim.launch.py` 要发 `/robot/cmd_vel`。
-
-### 5. 安全区附近错位
-
-如果靠近安全区时，单个正方形分区被竖着匹配：
-
-- 确认黑色分割线 `black` 点是否稳定出现。
-- 确认红/蓝安全区点数足够。
-- 看 `match_result` 是否是 `hold`。如果是不匹配还被更新，说明质量闸门太松；如果一直 `hold`，说明模板或投影需要调。
-
-## 十三、常见问题
-
-### 1. `package 'gazebo_ros' not found` 仿真启动失败
-
-/opt/ros/humble 里没有 gazebo_ros
-``` bash
-sudo apt update
-sudo apt install ros-humble-gazebo-ros-pkgs
-```
-
-### Gazebo 状态异常
+1. 看话题：
 
 ```bash
-pkill -f gzserver
-pkill -f gzclient
+ros2 topic list
+ros2 topic hz /robot/image_raw
+ros2 topic echo /robot/pose
+ros2 topic echo /robot/odom
 ```
 
-然后重新启动。
+2. 看 `result` 是否有 X。
 
-### `result` 有点，`match_result` 没点
+3. 看 `match_result` 中投影点是否落在模板轮廓上。
 
-优先检查：
+4. 看 `match tracking/hold` 状态。
 
-1. `dist_table.txt` 是否覆盖足够远。
-2. `projection_scale_correction` 是否合适。
-3. `max_feature_distance` 是否太小。
-4. 是否重新 source 最新编译结果。
-
-### 点云整体偏小或偏大
-
-先看距离表，再调：
+5. 如果点云整体偏小或偏大，优先检查：
 
 ```text
-projection_scale_correction
+robocon_localization/config/dist_table.txt
+robocon_localization/src/loc_sidelines.cpp 中 projection_scale_correction
 ```
 
-调大：点投得更远。
+`projection_scale_correction` 调大，点投得更远；调小，点投得更近。
 
-调小：点投得更近。
+## 开发注意
 
-### 颜色混淆
-
-改 HSV/BGR 阈值后要做两件事：
-
-```bash
-colcon build --packages-select robocon_localization
-ros2 run robocon_localization load_lines_map --ros-args \
-  -p lines_file:=/home/cst/jyc/src/robocon_localization/config/field_lines.png
-```
-
-否则运行时识别和模板图可能不一致。
-
+- 不要再新增桥接节点来转换 `/cmd_vel`、`/odom`、`/image_raw`。
+- 新增底层节点时，直接使用 `/robot/*` 统一话题。
+- 控制层只依赖 `/robot/pose` 和 `/robot/cmd_vel`。
+- 纯视觉定位时保持 `use_odom_for_tracking=false`。
+- 改 Gazebo 插件或 `robot.model` 后需要重新编译 `robocon25_sim` 并重启 Gazebo。
+- 改定位代码后重新编译 `robocon_localization`。
+- 改模板生成逻辑后重新运行 `load_lines_map`。

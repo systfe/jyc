@@ -69,8 +69,9 @@ int main(int argc, char** argv) {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<rclcpp::Node>("calibrate_dist");
 
+    std::string image_topic = node->declare_parameter<std::string>("image_topic", "/robot/image_raw");
     auto sub = node->create_subscription<sensor_msgs::msg::Image>(
-        "/omni_camera/image_raw", rclcpp::SensorDataQoS(), imageCallback);
+        image_topic, rclcpp::SensorDataQoS(), imageCallback);
 
     cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
     rclcpp::spin(node);

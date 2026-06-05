@@ -18,12 +18,10 @@ setup(
     zip_safe=True,
     maintainer='cst',
     maintainer_email='1656189150@qq.com',
-    description='Launch and interface bridge package for simulation and real robot bringup.',
+    description='Unified simulation and real robot bringup launch package.',
     license='TODO',
     tests_require=['pytest'],
     entry_points={
-        'console_scripts': [
-            'interface_bridge = robot_bringup.interface_bridge:main',
-        ],
+        'console_scripts': [],
     },
 )
