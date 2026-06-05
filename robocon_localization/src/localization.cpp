@@ -52,7 +52,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     int center_y = image_hsv.rows / 2;
 
     // 用射线扫描彩色边缘图像
-    for (int angle = 0; angle < 360; angle += 4) {
+    for (int angle = 0; angle < 360; angle += 1) {
         double rad = angle * CV_PI / 180.0;
         unsigned char last_pixel = 0;
         for (int length = 0; length < std::max(image_hsv.cols, image_hsv.rows); length++) {

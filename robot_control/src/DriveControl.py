@@ -63,14 +63,14 @@ class DriveControlConfig:
     angular_kp: float = 1.5
 
     # 最大线速度，单位 m/s。实车初期建议保守一些。
-    max_linear_speed: float = 0.50
+    max_linear_speed: float = 0.5
 
     # 最小线速度，单位 m/s。距离很小时若速度过小，小车可能因为摩擦不动。
     # 设置为 0 表示完全按 P 控制输出；实车可尝试 0.03~0.08。
     min_linear_speed: float = 0.02
 
     # 最大角速度，单位 deg/s。外部按度调参更直观，内部会自动转成 rad/s。
-    max_angular_speed_deg: float = 120.0
+    max_angular_speed_deg: float = 30.0
 
     # 最小角速度，单位 deg/s。实车原地转时如果起不来，可适当增大。
     min_angular_speed_deg: float = 6.0

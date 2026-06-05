@@ -80,7 +80,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     int center_y = image_hsv.rows / 2;
 
     // 用射线扫描彩色边缘、红色和蓝色图像
-    for (int angle = 0; angle < 360; angle += 4) {
+    for (int angle = 0; angle < 360; angle += 1) {
         double rad = angle * CV_PI / 180.0;
         unsigned char last_pixel_white = 0;
         unsigned char last_pixel_red = 0;

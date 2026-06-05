@@ -17,10 +17,14 @@ public:
 private:
     cv::Mat createGradientMask(int size);
     cv::Mat createColorMask() const;
+    cv::Mat createMagentaMask() const;
+    cv::Mat createPurpleMask() const;
+    cv::Mat createFilledSafetyZoneMaskFromPurple(const cv::Mat& purpleMask) const;
     cv::Mat createRedMask() const;
     cv::Mat createBlueMask() const;
     cv::Mat createEdgeMask(const cv::Mat& mask) const;
     cv::Mat createDirectionalGradientFromMask(const cv::Mat& mask, int innerRadius, int outerRadius) const;
+    cv::Mat createFilledGradientFromMask(const cv::Mat& mask, const cv::Mat& blockedMask, int outerRadius) const;
     void generateGradientImage();
     void generateBlueGradientImage();
     void generateRedGradientImage();
