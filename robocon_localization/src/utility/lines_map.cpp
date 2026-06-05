@@ -255,7 +255,7 @@ void LinesMap::generateGradientImage() {
     cv::Mat purpleMask = createPurpleMask();
     cv::Mat safetyZoneMask = createFilledSafetyZoneMaskFromPurple(purpleMask);
     int innerRadius = std::max(6, std::max(lines_image.cols, lines_image.rows) / 100);
-    int outerRadius = std::max(18, std::max(lines_image.cols, lines_image.rows) / 35);
+    int outerRadius = std::max(20, std::max(lines_image.cols, lines_image.rows) / 35);
     cv::Mat magentaGradient = createDirectionalGradientFromMask(magentaMask, innerRadius, outerRadius);
     cv::Mat purpleGradient = createFilledGradientFromMask(purpleMask, safetyZoneMask, outerRadius);
     cv::max(magentaGradient, purpleGradient, gradientImage);

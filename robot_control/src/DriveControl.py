@@ -1,22 +1,8 @@
 """
-小车纯跟踪控制模块。
+小车移动控制模块。
 
-使用方式示例：
-
-    import rclpy
-    from DriveControl import DriveControl, DriveControlConfig
-
-    rclpy.init()
-    drive = DriveControl()
-
-    drive.move_to_abs(1.0, 0.5)       # 移动到地图坐标 x=1.0m, y=0.5m
-    drive.turn_to_abs(90.0)           # 原地转到地图坐标系 90 度
-    drive.move_to_relative(0.3, 0.0)  # 相对车体向前 0.3m
-    drive.turn_by(-45.0)              # 相对当前朝向右转 45 度
-    pose = drive.print_pose()         # 打印并返回当前位置
-
-    drive.destroy_node()
-    rclpy.shutdown()
+已有算法：
+    - PurePursuit 纯跟踪算法
 
 坐标约定：
     - 订阅定位：/robot/pose，类型 geometry_msgs/msg/PoseStamped。
@@ -40,7 +26,7 @@ from rclpy.node import Node
 
 
 @dataclass
-class DriveControlConfig:
+class PurePursuitConfig:
     """控制参数集中放在这里，实车调参时优先改这一块。"""
 
     # 话题名。仿真和实物都建议通过 robot_bringup 统一成 /robot/*。
@@ -51,7 +37,7 @@ class DriveControlConfig:
     control_hz: float = 30.0
 
     # 到点判定阈值。小于这个距离就认为已经到达目标点。
-    position_tolerance_m: float = 0.008
+    position_tolerance_m: float = 0.01
 
     # 角度判定阈值。小于这个角度误差就认为朝向已经到达。
     yaw_tolerance_deg: float = 1.0
@@ -75,32 +61,22 @@ class DriveControlConfig:
     # 最小角速度，单位 deg/s。实车原地转时如果起不来，可适当增大。
     min_angular_speed_deg: float = 6.0
 
-    # 移动到点时是否同时修正朝向。
-    # False：只管 x/y，到点后不管车头朝哪里。
-    # True：移动过程中按 target_yaw_deg 修正车头。
-    # 注意：Move() 显式传入 target_yaw_deg 时会优先修正朝向。
-    rotate_while_moving: bool = False
-
-    # 如果定位话题长时间没有数据，等待多久后报错。
-    pose_wait_timeout_s: float = 5.0
-
-    # 单次动作默认超时时间，避免目标不可达时一直卡住。
-    default_action_timeout_s: float = 20.0
-
     # 停车后额外发布几帧 0 速度，让底盘更稳地停下来。
     stop_publish_count: int = 5
 
 
-class DriveControl(Node):
+class PurePursuit(Node):
     """面向外部控制逻辑的简单跟踪控制器。"""
 
-    def __init__(self, config: Optional[DriveControlConfig] = None):
+    def __init__(self):
         super().__init__("drive_control")
-        self.config = config or DriveControlConfig()
+        self.config = PurePursuitConfig()
 
+        # 机器人位姿
         self._pose: Optional[Tuple[float, float, float]] = None
         self._last_pose_time: Optional[float] = None
 
+        # 订阅机器人位姿
         self._pose_sub = self.create_subscription(
             PoseStamped,
             self.config.pose_topic,
@@ -114,12 +90,13 @@ class DriveControl(Node):
         )
 
         self.get_logger().info(
-            f"DriveControl 已启动: pose={self.config.pose_topic}, "
+            f"{self.__class__.__name__}已启动: pose={self.config.pose_topic}, "
             f"cmd_vel={self.config.cmd_vel_topic}"
         )
 
+
     # -------------------------------------------------------------------------
-    # 外部建议调用的函数
+    # 外部调用的函数
     # -------------------------------------------------------------------------
 
     def Move(
@@ -127,7 +104,7 @@ class DriveControl(Node):
         x: float,
         y: float,
         target_yaw_deg: Optional[float] = None,
-        timeout_s: Optional[float] = None,
+        timeout_s: float =20.0,
     ) -> bool:
         """
         移动到地图绝对坐标。
@@ -135,8 +112,8 @@ class DriveControl(Node):
         参数：
             x, y：目标地图坐标，单位 m。
             target_yaw_deg：可选目标朝向，单位 deg。
-                - 若 config.rotate_while_moving=False，则移动时不修正朝向。
-                - 若 config.rotate_while_moving=True 且提供该参数，则边走边修正朝向。
+                若给定target_yaw_deg，则边走边修正朝向。
+                若未给定target_yaw_deg，则只移动不改变朝向。
             timeout_s：本次动作超时时间；不填则使用默认值。
 
         返回：
@@ -146,7 +123,7 @@ class DriveControl(Node):
         if not self.wait_for_pose():
             return False
 
-        timeout_s = self._resolve_timeout(timeout_s)
+
         target_yaw_rad = None if target_yaw_deg is None else math.radians(target_yaw_deg)
         start_time = time.monotonic()
         period = 1.0 / self.config.control_hz
@@ -165,6 +142,7 @@ class DriveControl(Node):
 
             if distance <= self.config.position_tolerance_m:
                 self.stop()
+                print(f"到达目标, x: {pose[0]:.2f}, y: {pose[1]:.2f}, yaw: {pose[2]:.2f}, 用时: {time.monotonic() - start_time:.1f}")
                 return True
 
             if time.monotonic() - start_time > timeout_s:
@@ -185,12 +163,11 @@ class DriveControl(Node):
             cmd.linear.x = linear_speed * body_x / max(distance, 1e-6)
             cmd.linear.y = linear_speed * body_y / max(distance, 1e-6)
 
-            if target_yaw_rad is not None or self.config.rotate_while_moving:
-                if target_yaw_rad is None:
-                    target_yaw_rad = cur_yaw
+            if target_yaw_rad is not None:
                 yaw_error = self._normalize_angle(target_yaw_rad - cur_yaw)
                 cmd.angular.z = self._calc_angular_speed(yaw_error)
-
+            else:
+                target_yaw_rad = cur_yaw
             self._cmd_pub.publish(cmd)
             time.sleep(period)
 
@@ -198,7 +175,7 @@ class DriveControl(Node):
         self,
         dx: float,
         dy: float,
-        timeout_s: Optional[float] = None,
+        timeout_s: float=20.0,
     ) -> bool:
         """
         移动到相对位置。
@@ -223,7 +200,7 @@ class DriveControl(Node):
     def Turn_to(
         self,
         target_yaw_deg: float,
-        timeout_s: Optional[float] = None,
+        timeout_s: float = 20.0,
     ) -> bool:
         """
         原地转到地图绝对朝向。
@@ -235,7 +212,6 @@ class DriveControl(Node):
         if not self.wait_for_pose():
             return False
 
-        timeout_s = self._resolve_timeout(timeout_s)
         target_yaw = math.radians(target_yaw_deg)
         start_time = time.monotonic()
         period = 1.0 / self.config.control_hz
@@ -268,7 +244,7 @@ class DriveControl(Node):
     def Turn_by(
         self,
         delta_yaw_deg: float,
-        timeout_s: Optional[float] = None,
+        timeout_s: float=20.0,
     ) -> bool:
         """
         相对当前朝向转动指定角度。
@@ -316,7 +292,7 @@ class DriveControl(Node):
         start_time = time.monotonic()
         while rclpy.ok() and self._pose is None:
             rclpy.spin_once(self, timeout_sec=0.05)
-            if time.monotonic() - start_time > self.config.pose_wait_timeout_s:
+            if time.monotonic() - start_time > 5.0:
                 self.get_logger().error("等待 /robot/pose 超时")
                 return False
         return True
@@ -334,8 +310,6 @@ class DriveControl(Node):
         self._pose = (msg.pose.position.x, msg.pose.position.y, yaw)
         self._last_pose_time = time.monotonic()
 
-    def _resolve_timeout(self, timeout_s: Optional[float]) -> float:
-        return self.config.default_action_timeout_s if timeout_s is None else timeout_s
 
     def _calc_angular_speed(self, yaw_error: float) -> float:
         angular_speed = self.config.angular_kp * yaw_error

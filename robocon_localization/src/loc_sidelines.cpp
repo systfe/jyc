@@ -37,6 +37,10 @@ static float initial_counter_y = 0;
 static float initial_counter_yaw = 0;
 static bool use_odom_for_tracking = false;
 static bool use_safety_axis_constraint = false;
+static bool last_tracking_match_valid = false;
+static int last_tracking_score = 0;
+static int last_tracking_matched = 0;
+static int last_tracking_features = 0;
 static cv::Mat field_image;
 static cv::Mat monitor_image;
 static cv::Mat image_lines_all;
@@ -258,7 +262,8 @@ static int scoreSafetyAxisConsistency(const std::vector<cv::Point2f>& points,
                                       float pose_yaw,
                                       MatchFocus focus)
 {
-    if (!use_safety_axis_constraint) {
+    const bool automatic_axis_constraint = points.size() >= 12;
+    if (!use_safety_axis_constraint && !automatic_axis_constraint) {
         return 0;
     }
 
@@ -270,15 +275,19 @@ static int scoreSafetyAxisConsistency(const std::vector<cv::Point2f>& points,
     if (!observed_axis.valid) {
         return 0;
     }
+    if (!use_safety_axis_constraint && observed_axis.confidence < 0.50f) {
+        return 0;
+    }
 
     const float transformed_axis = normalizeAxisAngleDeg(observed_axis.angle_deg + pose_yaw);
     const float diff = axisAngleDiffDeg(transformed_axis, map_axis.angle_deg);
-    if (diff <= 25.0f) {
-        return static_cast<int>((25.0f - diff) * observed_axis.confidence * 40.0f);
+    const float tolerance = use_safety_axis_constraint ? 25.0f : 18.0f;
+    if (diff <= tolerance) {
+        return static_cast<int>((tolerance - diff) * observed_axis.confidence * 40.0f);
     }
 
     const float penalty_scale = focus == MatchFocus::Yaw ? 180.0f : 110.0f;
-    return -static_cast<int>((diff - 25.0f) * observed_axis.confidence * penalty_scale);
+    return -static_cast<int>((diff - tolerance) * observed_axis.confidence * penalty_scale);
 }
 
 static cv::Mat createDirectionalGradientFromMask(const cv::Mat& mask, int innerRadius, int outerRadius)
@@ -423,7 +432,7 @@ static cv::Mat createMagentaMap(const cv::Mat& lines_image)
         cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)));
 
     const int innerRadius = std::max(6, std::max(lines_image.cols, lines_image.rows) / 100);
-    const int outerRadius = std::max(18, std::max(lines_image.cols, lines_image.rows) / 35);
+    const int outerRadius = std::max(24, std::max(lines_image.cols, lines_image.rows) / 28);
     return createDirectionalGradientFromMask(magenta_mask, innerRadius, outerRadius);
 }
 
@@ -446,7 +455,7 @@ static cv::Mat createPurpleMap(const cv::Mat& lines_image)
         cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)));
 
     const int innerRadius = std::max(6, std::max(lines_image.cols, lines_image.rows) / 100);
-    const int outerRadius = std::max(18, std::max(lines_image.cols, lines_image.rows) / 35);
+    const int outerRadius = std::max(24, std::max(lines_image.cols, lines_image.rows) / 28);
     (void)innerRadius;
     cv::Mat safety_zone_mask = createFilledSafetyZoneMaskFromPurple(purple_mask);
     return createFilledGradientFromMask(purple_mask, safety_zone_mask, outerRadius);
@@ -469,7 +478,7 @@ static cv::Mat createBlackMap(const cv::Mat& lines_image)
         cv::MORPH_OPEN,
         cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3)));
 
-    const int radius = std::max(14, std::max(lines_image.cols, lines_image.rows) / 45);
+    const int radius = std::max(18, std::max(lines_image.cols, lines_image.rows) / 36);
     return createDirectionalGradientFromMask(black_mask, radius, radius);
 }
 
@@ -566,6 +575,75 @@ static int reliableScore(int raw_score, const std::vector<cv::Point2f>& points)
     return static_cast<int>(raw_score * featureReliability(points));
 }
 
+static int totalFeaturePoints(const std::vector<cv::Point2f>& magenta_points,
+                              const std::vector<cv::Point2f>& purple_points,
+                              const std::vector<cv::Point2f>& black_points,
+                              const std::vector<cv::Point2f>& red_points,
+                              const std::vector<cv::Point2f>& blue_points)
+{
+    return static_cast<int>(
+        magenta_points.size() +
+        purple_points.size() +
+        black_points.size() +
+        red_points.size() +
+        blue_points.size());
+}
+
+static int countMatchedPointsOnMap(const std::vector<cv::Point2f>& points,
+                                   const cv::Mat& score_map,
+                                   const cv::Point2f& center,
+                                   float pose_x,
+                                   float pose_y,
+                                   float pose_yaw,
+                                   int threshold = 150)
+{
+    if (score_map.empty()) {
+        return 0;
+    }
+
+    const float rad = pose_yaw * CV_PI / 180.0f;
+    const float cos_yaw = std::cos(rad);
+    const float sin_yaw = std::sin(rad);
+    int matched = 0;
+
+    for (const auto& point : points) {
+        const float x = point.x - center.x;
+        const float y = point.y - center.y;
+        const int map_x = cvRound(x * cos_yaw - y * sin_yaw + center.x + pose_x);
+        const int map_y = cvRound(x * sin_yaw + y * cos_yaw + center.y + pose_y);
+
+        int local_best = 0;
+        for (int dy = -3; dy <= 3; ++dy) {
+            for (int dx = -3; dx <= 3; ++dx) {
+                const int sample_x = map_x + dx;
+                const int sample_y = map_y + dy;
+                if (sample_x >= 0 && sample_x < score_map.cols &&
+                    sample_y >= 0 && sample_y < score_map.rows) {
+                    local_best = std::max(local_best,
+                                          static_cast<int>(score_map.at<uchar>(sample_y, sample_x)));
+                }
+            }
+        }
+
+        if (local_best >= threshold) {
+            ++matched;
+        }
+    }
+
+    return matched;
+}
+
+static int minimumRefineScore(size_t point_count)
+{
+    return std::max(360, static_cast<int>(std::min<size_t>(point_count, 10) * 90));
+}
+
+struct MatchQuality {
+    int score = 0;
+    int matched = 0;
+    int features = 0;
+};
+
 static int scorePose(const std::vector<cv::Point2f>& white_points,
                      const std::vector<cv::Point2f>& magenta_points,
                      const std::vector<cv::Point2f>& purple_points,
@@ -603,6 +681,49 @@ static int scorePose(const std::vector<cv::Point2f>& white_points,
     return magenta_score + purple_score + black_score + red_score + blue_score + safety_axis_score;
 }
 
+static MatchQuality evaluatePoseQuality(const std::vector<cv::Point2f>& white_points,
+                                        const std::vector<cv::Point2f>& magenta_points,
+                                        const std::vector<cv::Point2f>& purple_points,
+                                        const std::vector<cv::Point2f>& black_points,
+                                        const std::vector<cv::Point2f>& red_points,
+                                        const std::vector<cv::Point2f>& blue_points,
+                                        const cv::Point2f& center,
+                                        float pose_x,
+                                        float pose_y,
+                                        float pose_yaw,
+                                        MatchFocus focus)
+{
+    MatchQuality quality;
+    quality.features = totalFeaturePoints(magenta_points, purple_points, black_points, red_points, blue_points);
+    quality.matched =
+        countMatchedPointsOnMap(magenta_points, image_magenta_map, center, pose_x, pose_y, pose_yaw) +
+        countMatchedPointsOnMap(purple_points, image_purple_map, center, pose_x, pose_y, pose_yaw) +
+        countMatchedPointsOnMap(black_points, image_black_map, center, pose_x, pose_y, pose_yaw) +
+        countMatchedPointsOnMap(red_points, image_red_map, center, pose_x, pose_y, pose_yaw) +
+        countMatchedPointsOnMap(blue_points, image_blue_map, center, pose_x, pose_y, pose_yaw);
+    quality.score = scorePose(
+        white_points, magenta_points, purple_points, black_points, red_points, blue_points,
+        center, pose_x, pose_y, pose_yaw, focus);
+    return quality;
+}
+
+static bool isMatchQualityAcceptable(const MatchQuality& quality)
+{
+    if (quality.features < 6) {
+        return false;
+    }
+
+    const int minimum_matched =
+        std::clamp(quality.features / 8, 3, 9);
+    if (quality.matched < minimum_matched) {
+        return false;
+    }
+
+    const float matched_ratio =
+        static_cast<float>(quality.matched) / static_cast<float>(std::max(quality.features, 1));
+    return matched_ratio >= 0.10f && quality.score > 0;
+}
+
 static void refineYawWithSidelinePoints(const std::vector<cv::Point2f>& red_points,
                                         const std::vector<cv::Point2f>& blue_points,
                                         const cv::Point2f& center,
@@ -615,6 +736,7 @@ static void refineYawWithSidelinePoints(const std::vector<cv::Point2f>& red_poin
     }
 
     int last_sum = 0;
+    const int minimum_sum = minimumRefineScore(red_points.size() + blue_points.size());
     for (int i = 0; i < 20; ++i) {
         int best_sum = 0;
         float best_angle = 0.0f;
@@ -629,7 +751,7 @@ static void refineYawWithSidelinePoints(const std::vector<cv::Point2f>& red_poin
             }
         }
 
-        if (best_sum <= last_sum || best_angle == 0.0f) {
+        if (best_sum < minimum_sum || best_sum <= last_sum || best_angle == 0.0f) {
             break;
         }
 
@@ -657,7 +779,8 @@ static void refinePoseWithDetectedPoints(const std::vector<cv::Point2f>& white_p
             MatchResult magenta_match = LinesMatcher::refineMatchWithWhitePoints(
                 magenta_points, image_magenta_map, center, pose_x, pose_y, pose_yaw);
 
-            if (magenta_match.max_sum <= last_sum) {
+            if (magenta_match.max_sum < minimumRefineScore(magenta_points.size()) ||
+                magenta_match.max_sum <= last_sum) {
                 break;
             }
 
@@ -675,7 +798,8 @@ static void refinePoseWithDetectedPoints(const std::vector<cv::Point2f>& white_p
             MatchResult purple_match = LinesMatcher::refineMatchWithWhitePoints(
                 purple_points, image_purple_map, center, pose_x, pose_y, pose_yaw);
 
-            if (purple_match.max_sum <= last_sum) {
+            if (purple_match.max_sum < minimumRefineScore(purple_points.size()) ||
+                purple_match.max_sum <= last_sum) {
                 break;
             }
 
@@ -693,7 +817,8 @@ static void refinePoseWithDetectedPoints(const std::vector<cv::Point2f>& white_p
             MatchResult black_match = LinesMatcher::refineMatchWithWhitePoints(
                 black_points, image_black_map, center, pose_x, pose_y, pose_yaw);
 
-            if (black_match.max_sum <= last_sum) {
+            if (black_match.max_sum < minimumRefineScore(black_points.size()) ||
+                black_match.max_sum <= last_sum) {
                 break;
             }
 
@@ -815,6 +940,23 @@ static void trackPoseWithDetectedPoints(const std::vector<cv::Point2f>& white_po
                                   0, 1, 10, 1, MatchFocus::Yaw, pose_x, pose_y, pose_yaw);
     }
 
+    MatchQuality quality = evaluatePoseQuality(
+        white_points, magenta_points, purple_points, black_points, red_points, blue_points,
+        center, pose_x, pose_y, pose_yaw, MatchFocus::Position);
+    if (!isMatchQualityAcceptable(quality)) {
+        pose_x = previous_x;
+        pose_y = previous_y;
+        pose_yaw = previous_yaw;
+        quality = evaluatePoseQuality(
+            white_points, magenta_points, purple_points, black_points, red_points, blue_points,
+            center, pose_x, pose_y, pose_yaw, MatchFocus::Position);
+    }
+
+    last_tracking_score = quality.score;
+    last_tracking_matched = quality.matched;
+    last_tracking_features = quality.features;
+    last_tracking_match_valid = isMatchQualityAcceptable(quality);
+
     clampPoseInsideField(pose_x, pose_y);
 }
 
@@ -895,8 +1037,14 @@ static bool tryInitialVisualLocalization(const std::vector<cv::Point2f>& white_p
         refinePoseWithDetectedPoints(white_points, magenta_points, purple_points, black_points, red_points, blue_points, center,
                                      pose_x, pose_y, pose_yaw);
 
-        const int score = scorePose(white_points, magenta_points, purple_points, black_points, red_points, blue_points,
-                                    center, pose_x, pose_y, pose_yaw, MatchFocus::Initial);
+        const MatchQuality quality = evaluatePoseQuality(
+            white_points, magenta_points, purple_points, black_points, red_points, blue_points,
+            center, pose_x, pose_y, pose_yaw, MatchFocus::Initial);
+        if (!isMatchQualityAcceptable(quality)) {
+            continue;
+        }
+
+        const int score = quality.score;
         if (score > best_score) {
             best_score = score;
             best_name = start_pose.name;
@@ -914,6 +1062,13 @@ static bool tryInitialVisualLocalization(const std::vector<cv::Point2f>& white_p
     }
 
     setVisualInitialPose(best_x, best_y, best_yaw);
+    const MatchQuality quality = evaluatePoseQuality(
+        white_points, magenta_points, purple_points, black_points, red_points, blue_points,
+        center, best_x, best_y, best_yaw, MatchFocus::Initial);
+    last_tracking_score = quality.score;
+    last_tracking_matched = quality.matched;
+    last_tracking_features = quality.features;
+    last_tracking_match_valid = isMatchQualityAcceptable(quality);
     ROS_INFO(
         "初始视觉定位: %s center=(%.2fm, %.2fm) start_yaw=%.1fdeg score=%d corrected=(%.2fm, %.2fm, %.1fdeg)",
         best_name,
@@ -976,6 +1131,10 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
                  getStructuringElement(MORPH_RECT, Size(3, 3)));
     morphologyEx(image_blue, image_blue, MORPH_OPEN,
                  getStructuringElement(MORPH_RECT, Size(3, 3)));
+    morphologyEx(image_black, image_black, MORPH_CLOSE,
+                 getStructuringElement(MORPH_RECT, Size(3, 3)));
+    dilate(image_black, image_black,
+           getStructuringElement(MORPH_RECT, Size(3, 3)));
 
     int center_x = image_hsv.cols / 2;
     int center_y = image_hsv.rows / 2;
@@ -1154,13 +1313,17 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     static int debug_frame_count = 0;
     if (++debug_frame_count % 30 == 0) {
         printf(
-            "detected points before match: white=%zu magenta=%zu purple=%zu black=%zu red=%zu blue=%zu\n",
+            "detected points before match: white=%zu magenta=%zu purple=%zu black=%zu red=%zu blue=%zu, matched=%d/%d score=%d status=%s\n",
             white_points.size(),
             magenta_points.size(),
             purple_points.size(),
             black_points.size(),
             red_points.size(),
-            blue_points.size());
+            blue_points.size(),
+            last_tracking_matched,
+            last_tracking_features,
+            last_tracking_score,
+            last_tracking_match_valid ? "tracking" : "hold");
     }
 
     cv::Point2f center = map_center;
@@ -1178,6 +1341,19 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
 
     // 显示匹配效果
     cv::Mat image_match_result = image_lines_all.clone();
+    cv::putText(
+        image_match_result,
+        cv::format(
+            "match %s %d/%d score=%d",
+            last_tracking_match_valid ? "tracking" : "hold",
+            last_tracking_matched,
+            last_tracking_features,
+            last_tracking_score),
+        cv::Point(8, 24),
+        cv::FONT_HERSHEY_SIMPLEX,
+        0.6,
+        cv::Scalar(0, 0, 0),
+        2);
     // cv::Mat image_match_result = image_lines_map.clone();
     // cv::Mat image_match_result = image_red_map.clone();
     // cv::Mat image_match_result = cv::Mat::zeros(image_red_map.size(), CV_8UC1);
