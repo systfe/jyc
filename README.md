@@ -1,8 +1,8 @@
 # 救援车
+
 改自b站阿杰老师的[RoboCon25](https://github.com/6-robot/robocon25_proof)
 
 通过鱼眼相机进行纯视觉定位的小车。
-
 
 # 项目结构
 
@@ -13,11 +13,10 @@
 功能：
 
 - 启动 `3m x 3m` 场地。
-![场地](robocon_localization/config/field_bg.png)
+  ![场地](robocon_localization/config/field_bg.png)
 - 生成机器人实体。
 - 订阅 `/cmd_vel` 控制机器人运动。
 - 发布 `/odom` 作为仿真里程计参考。
-
 
 主要内容：
 
@@ -91,8 +90,8 @@ robot_bringup/
 - 作用：控制层 Python 包。
 - 在此包内编写控制逻辑。
 
-
 # 使用方法
+
 首先下载该仓库到本地，并配置 ROS 2 环境变量：
 
 ```bash
@@ -115,7 +114,9 @@ source [你的项目路径]/jyc/install/setup.bash
 colcon build
 source install/setup.bash
 ```
+
 或者
+
 ```bash
 cd [你的项目路径]/jyc
 colcon build
@@ -130,26 +131,27 @@ ros2 launch robot_bringup real_localization.launch.py
 
 启动后会打开result，match_result，定位窗口（详细见窗口说明）
 
- - 参数 `image_topic`: 摄像头发布的话题，默认是 `/robot/image_raw`。
- - 参数 `odom_topic`: 底盘里程计发布的话题，默认是 `/robot/odom`。
- - 例:
+- 参数 `image_topic`: 摄像头发布的话题，默认是 `/robot/image_raw`。
+- 参数 `odom_topic`: 底盘里程计发布的话题，默认是 `/robot/odom`。
+- 例:
+
 ```bash
 ros2 launch robot_bringup real_localization.launch.py image_topic:=/camera/image_raw odom_topic:=/wheel/odom
 ```
+
 表示启动时使用 `/camera/image_raw` 作为图像话题，使用 `/wheel/odom` 作为里程计话题。
-
-
-
 
 ## 仿真启动
 
 ```bash
 ros2 launch robot_bringup sim.launch.py start_point:=1
 ```
+
 启动后会打开gazebo仿真世界和result，match_result，定位窗口（详细见窗口说明）
 
- - 参数`start_point` 可取 `1/2/3/4`，分别代表四个出发点，默认是 `1`。
- - 启动前如果 Gazebo 状态异常，可以先清理旧进程：
+- 参数`start_point` 可取 `1/2/3/4`，分别代表四个出发点，默认是 `1`。
+- 启动前如果 Gazebo 状态异常，可以先清理旧进程：
+
 ```bash
 pkill -9 -f gzserver
 pkill -9 -f gzclient
@@ -162,23 +164,24 @@ pkill -9 -f omni_mirror_sim
 - Gazebo 场地和小车。
 
 ## 移动控制
- - 用 rqt 手动控制：
+
+- 用 rqt 手动控制：
+
 ```bash
 ros2 run rqt_robot_steering rqt_robot_steering
 ```
+
 话题选择`/robot/cmd_vel`
 
- - 用键盘手动控制：
+- 用键盘手动控制：
+
 ```bash
 ros2 run teleop_twist_keyboard teleop_twist_keyboard /cmd_vel:=/robot/cmd_vel
 ```
 
-
 ## robot_control
+
 控制层代码
-
-
-
 
 ## 窗口说明
 
@@ -210,7 +213,6 @@ match hold 0/60 score=...
 
 显示视觉定位位置和里程计（如果有的话）参考。
 
-
 # 调试
 
 ## 话题
@@ -225,6 +227,7 @@ match hold 0/60 score=...
 ```
 
 说明：
+
 - `/robot/image_raw`：定位图像。仿真由 `omni_mirror_sim` 发布，实物由真实相机发布或 remap。
 - `/robot/pose`：视觉定位结果，单位米，坐标系 `map`。
 - `/robot/odom`：里程计参考，只用于显示对比。
@@ -232,33 +235,23 @@ match hold 0/60 score=...
 
 仿真内部仍有 `/sim_camera/image_raw`，这是 Gazebo 原始相机图像，只作为 `omni_mirror_sim` 的输入，不建议控制层使用。
 
-
-
-
-
-
-
-
-
 ## 生成模板图
 
-
 运行
+
 ```bash
 ros2 run robocon_localization load_lines_map
 ```
+
 之后，会在根目录下生成`red_lines.png`, `blue_lines.png`,`white_lines.png`三张图片。
 
 把这三个图片放在`yc/src/robocon_localization/config`下。
 
-
-
- - 修改颜色阈值、<u>模板生成逻辑</u>或 `field_lines.png` 后，需要<b>重新生成模板</b>：
-
- - 三个图片：
-![blue_lines](robocon_localization/config/blue_lines.png)
-![red_lines](robocon_localization/config/red_lines.png)
-![white_lines](robocon_localization/config/white_lines.png)
+- 修改颜色阈值、<u>模板生成逻辑</u>或 `field_lines.png` 后，需要<b>重新生成模板</b>：
+- 三个图片：
+  ![blue_lines](robocon_localization/config/blue_lines.png)
+  ![red_lines](robocon_localization/config/red_lines.png)
+  ![white_lines](robocon_localization/config/white_lines.png)
 
 ## 距离标定
 
@@ -268,25 +261,27 @@ ros2 run robocon_localization load_lines_map
 robocon_localization/config/dist_table.txt
 ```
 
- - 仿真标定：
+- 仿真标定：
 
 ```bash
 ros2 launch robocon_localization calibrate_dist.launch red_ball_x:=0.1
 ```
+
 打开之后小车前方距离red_ball_x处会有一个红色小球，同时终端会输出小车距离这个红球的像素值，将这个像素值和实际距离写入dist_table.txt中。
 控制小球位置分别测完数据之后，重新编译便标定成功。
 
 实车标定：
 让真实相机发布 `/robot/image_raw`，然后运行：
+
 ```bash
 ros2 run robocon_localization calibrate_dist --ros-args \-p image_topic:=/robot/image_raw
 ```
+
 启动后在车前方0.1/0.2/...的地面放一个红色标记，同时终端会输出小车距离这个标记的像素值。
 将这个像素值和实际距离写入dist_table.txt中。
 
- - 建议距离表覆盖到至少 `2.2m`。场地中心到角落约 `2.12m`，距离表太短会导致远处点只能外推，定位容易偏。
- - 在场地上标定或者仿真标定中，会有可能标定到红色安全区，此时直接把红色安全区遮住即可。
-
+- 建议距离表覆盖到至少 `2.2m`。场地中心到角落约 `2.12m`，距离表太短会导致远处点只能外推，定位容易偏。
+- 在场地上标定或者仿真标定中，会有可能标定到红色安全区，此时直接把红色安全区遮住即可。
 
 ## HSV 调试
 
@@ -316,15 +311,15 @@ robocon_localization/src/loc_sidelines.cpp
 8. 匹配质量不足时进入 `hold`，保持上一帧位姿。
 
 注意：
+
 - `white_lines.png` 是历史命名，实际表示洋红/紫色边缘模板。
 - `/robot/odom` 不参与定位，只在窗口中对比显示。
 
-
 # 常见问题
 
+# 
 
+* **关注cy谢谢喵**
+* **点个star谢谢喵**
 
-
-
-
-
+* **喵喵喵喵**
