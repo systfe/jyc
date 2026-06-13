@@ -6,6 +6,7 @@
   <arg name="use_safety_axis_constraint" default="false"/>
 
   <node name="loc_sidelines" pkg="robocon_localization" exec="loc_sidelines" output="screen">
+    <param from="$(find-pkg-share robocon_localization)/config/color_reference.yaml"/>
     <param name="table_file" value="$(find-pkg-share robocon_localization)/config/dist_table.txt"/>
     <param name="lines_file" value="$(find-pkg-share robocon_localization)/config/field_lines.png"/>
     <param name="field_file" value="$(find-pkg-share robocon_localization)/config/field_bg.png"/>

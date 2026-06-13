@@ -5,8 +5,11 @@
 #include <opencv2/opencv.hpp>
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <cmath>
 #include <initializer_list>
+#include <string>
+#include <vector>
 #include <builtin_interfaces/msg/time.hpp>
 #include <nav_msgs/msg/odometry.hpp>
 #include "distance_lookup.h"
@@ -70,26 +73,206 @@ enum class MatchFocus {
 static AxisEstimate red_map_axis;
 static AxisEstimate blue_map_axis;
 
+struct ColorGate {
+    std::vector<int64_t> rgb_reference;
+    int hue_tolerance = 10;
+    int saturation_lower_margin = 80;
+    int saturation_upper_margin = 80;
+    int value_lower_margin = 80;
+    int value_upper_margin = 80;
+    cv::Scalar bgr_lower_margin;
+    cv::Scalar bgr_upper_margin;
+    bool use_full_hue = false;
+    bool use_bgr_gate = false;
+    cv::Scalar hsv_lower;
+    cv::Scalar hsv_upper;
+    cv::Scalar bgr_lower;
+    cv::Scalar bgr_upper;
+};
+
+struct ColorThresholdConfig {
+    ColorGate red;
+    ColorGate blue;
+    ColorGate purple;
+    ColorGate magenta;
+    ColorGate black;
+};
+
+static ColorThresholdConfig color_thresholds = {
+    {{250, 74, 59}, 8, 75, 60, 100, 20, cv::Scalar(255, 255, 255), cv::Scalar(255, 255, 255), false, false, cv::Scalar(), cv::Scalar(), cv::Scalar(), cv::Scalar()},
+    {{92, 168, 222}, 8, 110, 65, 50, 35, cv::Scalar(77, 73, 52), cv::Scalar(33, 87, 78), false, true, cv::Scalar(), cv::Scalar(), cv::Scalar(), cv::Scalar()},
+    {{1, 52, 108}, 21, 148, 10, 83, 147, cv::Scalar(48, 32, 1), cv::Scalar(147, 98, 79), false, true, cv::Scalar(), cv::Scalar(), cv::Scalar(), cv::Scalar()},
+    {{255, 25, 255}, 20, 185, 25, 195, 0, cv::Scalar(255, 255, 255), cv::Scalar(255, 255, 255), false, false, cv::Scalar(), cv::Scalar(), cv::Scalar(), cv::Scalar()},
+    {{0, 0, 0}, 0, 0, 80, 0, 55, cv::Scalar(255, 255, 255), cv::Scalar(255, 255, 255), true, false, cv::Scalar(), cv::Scalar(), cv::Scalar(), cv::Scalar()},
+};
+
+static int clampToByte(int64_t value)
+{
+    return static_cast<int>(std::clamp<int64_t>(value, 0, 255));
+}
+
+static std::vector<int64_t> sanitizeRgbReference(const rclcpp::Node::SharedPtr& node,
+                                                 const std::string& name,
+                                                 const std::vector<int64_t>& default_value,
+                                                 const std::vector<int64_t>& values)
+{
+    if (values.size() != 3) {
+        RCLCPP_WARN(
+            node->get_logger(),
+            "颜色参考值 %s 必须是 3 个整数，当前配置无效，继续使用默认值",
+            name.c_str());
+        return default_value;
+    }
+
+    return {
+        clampToByte(values[0]),
+        clampToByte(values[1]),
+        clampToByte(values[2]),
+    };
+}
+
+static cv::Scalar rgbReferenceToBgr(const std::vector<int64_t>& rgb)
+{
+    return cv::Scalar(rgb[2], rgb[1], rgb[0]);
+}
+
+static cv::Scalar rgbReferenceToHsv(const std::vector<int64_t>& rgb)
+{
+    cv::Mat bgr(1, 1, CV_8UC3);
+    bgr.at<cv::Vec3b>(0, 0) = cv::Vec3b(
+        static_cast<uchar>(rgb[2]),
+        static_cast<uchar>(rgb[1]),
+        static_cast<uchar>(rgb[0]));
+
+    cv::Mat hsv;
+    cv::cvtColor(bgr, hsv, cv::COLOR_BGR2HSV);
+    const cv::Vec3b pixel = hsv.at<cv::Vec3b>(0, 0);
+    return cv::Scalar(pixel[0], pixel[1], pixel[2]);
+}
+
+static int shiftedHue(int hue, int delta)
+{
+    int shifted = (hue + delta) % 180;
+    if (shifted < 0) {
+        shifted += 180;
+    }
+    return shifted;
+}
+
+static cv::Scalar lowerBgrFromReference(const cv::Scalar& bgr, const cv::Scalar& margin)
+{
+    return cv::Scalar(
+        std::max(0.0, bgr[0] - margin[0]),
+        std::max(0.0, bgr[1] - margin[1]),
+        std::max(0.0, bgr[2] - margin[2]));
+}
+
+static cv::Scalar upperBgrFromReference(const cv::Scalar& bgr, const cv::Scalar& margin)
+{
+    return cv::Scalar(
+        std::min(255.0, bgr[0] + margin[0]),
+        std::min(255.0, bgr[1] + margin[1]),
+        std::min(255.0, bgr[2] + margin[2]));
+}
+
+static void generateThresholdsFromReference(ColorGate& gate)
+{
+    const cv::Scalar hsv = rgbReferenceToHsv(gate.rgb_reference);
+    const int reference_hue = static_cast<int>(hsv[0]);
+
+    const int lower_hue = gate.use_full_hue ?
+        0 :
+        shiftedHue(reference_hue, -gate.hue_tolerance);
+    const int upper_hue = gate.use_full_hue ?
+        179 :
+        shiftedHue(reference_hue, gate.hue_tolerance);
+
+    gate.hsv_lower = cv::Scalar(
+        lower_hue,
+        std::max(0.0, hsv[1] - gate.saturation_lower_margin),
+        std::max(0.0, hsv[2] - gate.value_lower_margin));
+    gate.hsv_upper = cv::Scalar(
+        upper_hue,
+        std::min(255.0, hsv[1] + gate.saturation_upper_margin),
+        std::min(255.0, hsv[2] + gate.value_upper_margin));
+
+    const cv::Scalar bgr = rgbReferenceToBgr(gate.rgb_reference);
+    gate.bgr_lower = lowerBgrFromReference(bgr, gate.bgr_lower_margin);
+    gate.bgr_upper = upperBgrFromReference(bgr, gate.bgr_upper_margin);
+}
+
+static ColorGate readColorGate(const rclcpp::Node::SharedPtr& node,
+                               const std::string& prefix,
+                               const ColorGate& default_gate)
+{
+    ColorGate gate;
+    gate = default_gate;
+    const std::string rgb_param = prefix + "_rgb_reference";
+    const std::vector<int64_t> configured_rgb =
+        node->declare_parameter<std::vector<int64_t>>(rgb_param, default_gate.rgb_reference);
+    gate.rgb_reference = sanitizeRgbReference(node, rgb_param, default_gate.rgb_reference, configured_rgb);
+    generateThresholdsFromReference(gate);
+    return gate;
+}
+
+static void loadColorThresholds(const rclcpp::Node::SharedPtr& node)
+{
+    color_thresholds.red = readColorGate(node, "red", color_thresholds.red);
+    color_thresholds.blue = readColorGate(node, "blue", color_thresholds.blue);
+    color_thresholds.purple = readColorGate(node, "purple", color_thresholds.purple);
+    color_thresholds.magenta = readColorGate(node, "magenta", color_thresholds.magenta);
+    color_thresholds.black = readColorGate(node, "black", color_thresholds.black);
+    RCLCPP_INFO(node->get_logger(), "颜色参考值已加载，可在 color_reference.yaml 中调试");
+}
+
+static cv::Mat makeHsvMask(const cv::Mat& hsv_image, const cv::Scalar& lower, const cv::Scalar& upper)
+{
+    cv::Mat mask;
+    if (lower[0] <= upper[0]) {
+        cv::inRange(hsv_image, lower, upper, mask);
+        return mask;
+    }
+
+    cv::Mat low_hue_mask;
+    cv::Mat high_hue_mask;
+    cv::inRange(
+        hsv_image,
+        cv::Scalar(0, lower[1], lower[2]),
+        cv::Scalar(upper[0], upper[1], upper[2]),
+        low_hue_mask);
+    cv::inRange(
+        hsv_image,
+        cv::Scalar(lower[0], lower[1], lower[2]),
+        cv::Scalar(179, upper[1], upper[2]),
+        high_hue_mask);
+    cv::bitwise_or(low_hue_mask, high_hue_mask, mask);
+    return mask;
+}
+
+static cv::Mat makeColorMask(const cv::Mat& bgr_image,
+                             const cv::Mat& hsv_image,
+                             const ColorGate& gate)
+{
+    cv::Mat mask = makeHsvMask(hsv_image, gate.hsv_lower, gate.hsv_upper);
+    if (!gate.use_bgr_gate) {
+        return mask;
+    }
+
+    cv::Mat bgr_gate;
+    cv::inRange(bgr_image, gate.bgr_lower, gate.bgr_upper, bgr_gate);
+    cv::bitwise_and(mask, bgr_gate, mask);
+    return mask;
+}
+
 static void createSeparatedBluePurpleMasks(const cv::Mat& bgr_image,
                                            const cv::Mat& hsv_image,
                                            cv::Mat& blue_mask,
                                            cv::Mat& purple_mask)
 {
-    cv::Mat blue_hsv;
-    cv::Mat purple_hsv;
-
     // 蓝色和紫色的色相很接近，主要靠亮度和 BGR 通道形状区分：
     // 蓝色更偏浅青，紫色的红色通道保持较低。
-    cv::inRange(hsv_image, cv::Scalar(96, 40, 175), cv::Scalar(110, 210, 255), blue_hsv);
-    cv::inRange(hsv_image, cv::Scalar(94, 105, 25), cv::Scalar(126, 255, 255), purple_hsv);
-
-    cv::Mat blue_bgr_gate;
-    cv::Mat purple_bgr_gate;
-    cv::inRange(bgr_image, cv::Scalar(145, 95, 40), cv::Scalar(255, 255, 170), blue_bgr_gate);
-    cv::inRange(bgr_image, cv::Scalar(60, 20, 0), cv::Scalar(255, 150, 80), purple_bgr_gate);
-
-    cv::bitwise_and(blue_hsv, blue_bgr_gate, blue_mask);
-    cv::bitwise_and(purple_hsv, purple_bgr_gate, purple_mask);
+    blue_mask = makeColorMask(bgr_image, hsv_image, color_thresholds.blue);
+    purple_mask = makeColorMask(bgr_image, hsv_image, color_thresholds.purple);
 
     cv::Mat not_purple;
     cv::bitwise_not(purple_mask, not_purple);
@@ -423,7 +606,7 @@ static cv::Mat createMagentaMap(const cv::Mat& lines_image)
     cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
 
     cv::Mat magenta_mask;
-    cv::inRange(hsv, cv::Scalar(130, 45, 60), cv::Scalar(170, 255, 255), magenta_mask);
+    magenta_mask = makeColorMask(lines_image, hsv, color_thresholds.magenta);
     cv::morphologyEx(
         magenta_mask,
         magenta_mask,
@@ -470,7 +653,7 @@ static cv::Mat createBlackMap(const cv::Mat& lines_image)
     cv::cvtColor(lines_image, hsv, cv::COLOR_BGR2HSV);
 
     cv::Mat black_mask;
-    cv::inRange(hsv, cv::Scalar(0, 0, 0), cv::Scalar(180, 80, 55), black_mask);
+    black_mask = makeColorMask(lines_image, hsv, color_thresholds.black);
     cv::morphologyEx(
         black_mask,
         black_mask,
@@ -1109,16 +1292,16 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg)
     Mat image_hsv;
     cv::cvtColor(image_raw, image_hsv, COLOR_BGR2HSV);
 
-    Mat mask_red1, mask_red2;
+    Mat mask_red1;
     // 场地图红色 RGB(250,74,59)，OpenCV HSV 约为 (2,195,250)。
-    inRange(image_hsv, Scalar(0, 120, 150), Scalar(8, 255, 255), mask_red1);
+    mask_red1 = makeColorMask(image_raw, image_hsv, color_thresholds.red);
     image_red = mask_red1;
 
-    inRange(image_hsv, Scalar(0, 0, 0), Scalar(180, 80, 55), image_black);
+    image_black = makeColorMask(image_raw, image_hsv, color_thresholds.black);
 
     // 场地图洋红 RGB(255,25,255)，OpenCV HSV 约为 (150,230,255)。
     Mat image_magenta, image_purple;
-    inRange(image_hsv, Scalar(130, 45, 60), Scalar(170, 255, 255), image_magenta);
+    image_magenta = makeColorMask(image_raw, image_hsv, color_thresholds.magenta);
     createSeparatedBluePurpleMasks(image_raw, image_hsv, image_blue, image_purple);
 
     Mat image_white = image_magenta | image_purple;
@@ -1534,6 +1717,7 @@ int main(int argc, char** argv) {
     setlocale(LC_ALL, "");
     rclcpp::init(argc, argv);
     auto node = std::make_shared<rclcpp::Node>("loc_sidelines");
+    loadColorThresholds(node);
 
     std::string table_file = node->declare_parameter<std::string>("table_file", "distances.txt");
     distanceLookup.init(table_file);

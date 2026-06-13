@@ -1,16 +1,25 @@
 rtsp_camera_publisher:
   ros__parameters:
-    # 实车直接修改这里的 IP 即可。
-    # 如果要完全指定图像流地址，可以填写下面的 rtsp_url。
-    camera_ip: "192.168.10.100"
-
-    rtsp_port: 554
-    username: "admin"
-    password: "zxcvbnm12"
-
     # 如果要强制使用某一个完整地址，就填写 rtsp_url。
     # 留空时会先尝试 http_paths，再尝试 rtsp_paths。
     rtsp_url: ""
+
+    # 实车直接修改这里的 IP 即可。
+    # 如果要完全指定图像流地址，可以填写上面的 rtsp_url。
+    camera_ip: "192.168.10.100"
+    rtsp_port: 554
+    username: "admin"
+    password: "zxcvbnm12"
+    
+    image_topic: "/robot/image_raw"
+
+  # 发布前缩放图像，用于降低 ROS 传输压力和定位延迟。
+    output_width: 640
+    output_height: 640
+
+
+
+
 
     # 当前已验证的低延迟方案使用 OpenCV/FFmpeg。
     # 如果需要单独测试 GStreamer，可以把它改成 "gstreamer" 或 "auto"。
@@ -58,7 +67,7 @@ rtsp_camera_publisher:
     use_open_params: false
     use_hw_acceleration: false
 
-    image_topic: "/robot/image_raw"
+
     frame_id: "fisheye_camera"
     fps_limit: 30.0
     publish_queue_size: 1
@@ -67,9 +76,7 @@ rtsp_camera_publisher:
     capture_width: 0
     capture_height: 0
 
-    # 发布前缩放图像，用于降低 ROS 传输压力和定位延迟。
-    output_width: 640
-    output_height: 640
+    
 
     reconnect_delay_s: 0.5
     log_interval_s: 2.0

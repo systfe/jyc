@@ -11,17 +11,18 @@ def package_file(package_name, *parts):
 
 
 def generate_launch_description():
-    camera_params_file = LaunchConfiguration('camera_params_file')
     image_topic = LaunchConfiguration('image_topic')
+    camera_params_file = LaunchConfiguration('camera_params_file')
     show_preview = LaunchConfiguration('show_preview')
 
     return LaunchDescription([
+        DeclareLaunchArgument('image_topic', default_value='/robot/image_raw'),
+        DeclareLaunchArgument('show_preview', default_value='false'),
         DeclareLaunchArgument(
             'camera_params_file',
             default_value=package_file('robocon_localization', 'config', 'camera.yaml'),
         ),
-        DeclareLaunchArgument('image_topic', default_value='/robot/image_raw'),
-        DeclareLaunchArgument('show_preview', default_value='false'),
+
         Node(
             package='robocon_localization',
             executable='rtsp_camera_publisher.py',

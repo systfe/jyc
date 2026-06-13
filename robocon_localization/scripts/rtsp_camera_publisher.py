@@ -395,10 +395,15 @@ class RtspCameraPublisher(Node):
         self.last_seq = -1
         self.last_report_time = time.monotonic()
         self.get_logger().info(f"正在发布 RTSP 图像到 {topic}")
+        if self.get_parameter("show_preview").value:
+            window_name = self.get_parameter("preview_window_name").value
+            self.get_logger().info(f"摄像头预览窗口已开启: {window_name}")
 
     def destroy_node(self):
         if hasattr(self, "capture"):
             self.capture.stop()
+        if self.get_parameter("show_preview").value:
+            cv2.destroyAllWindows()
         super().destroy_node()
 
     def _declare_parameters(self) -> None:
@@ -454,6 +459,8 @@ class RtspCameraPublisher(Node):
         self.declare_parameter("reconnect_delay_s", 0.5)
         self.declare_parameter("publish_queue_size", 1)
         self.declare_parameter("log_interval_s", 2.0)
+        self.declare_parameter("show_preview", False)
+        self.declare_parameter("preview_window_name", "robot_camera")
 
     def _configure_ffmpeg(self) -> None:
         transport = self.get_parameter("rtsp_transport").value
@@ -471,6 +478,9 @@ class RtspCameraPublisher(Node):
         self.last_seq = frame_seq
 
         self.publisher.publish(self._make_image_msg(frame))
+        if self.get_parameter("show_preview").value:
+            cv2.imshow(self.get_parameter("preview_window_name").value, frame)
+            cv2.waitKey(1)
 
         now = time.monotonic()
         self.frame_count += 1

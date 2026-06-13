@@ -1,0 +1,19 @@
+loc_sidelines:
+  ros__parameters:
+    # 这里只需要填写取色器看到的 RGB 参考值。
+    # 程序会自动把 RGB 转成 OpenCV HSV，并生成识别阈值。
+
+    # 红色安全区。
+    red_rgb_reference: [250, 74, 59]
+
+    # 蓝色安全区。
+    blue_rgb_reference: [92, 168, 222]
+
+    # 紫色安全区边框。
+    purple_rgb_reference: [1, 52, 108]
+
+    # 出发区洋红。
+    magenta_rgb_reference: [255, 25, 255]
+
+    # 安全区中间黑色分割线。
+    black_rgb_reference: [0, 0, 0]
