@@ -15,8 +15,8 @@
 - 启动 `3m x 3m` 场地。
   ![场地](robocon_localization/config/field_bg.png)
 - 生成机器人实体。
-- 订阅 `/cmd_vel` 控制机器人运动。
-- 发布 `/odom` 作为仿真里程计参考。
+- 订阅 `/robot/cmd_vel` 控制机器人运动。
+- 发布 `/robot/odom` 作为仿真里程计参考。
 
 主要内容：
 
@@ -39,6 +39,7 @@ robocon25_sim/
 robocon_localization/
 ├── config/
 │   ├── dist_table.txt
+│   ├── rtsp_camera.yaml
 │   ├── field_lines.png
 │   ├── field_bg.png
 │   ├── white_lines.png
@@ -47,8 +48,11 @@ robocon_localization/
 ├── include/
 ├── launch/
 │   ├── localization.launch
+│   ├── rtsp_camera.launch.py
 │   ├── calibrate_dist.launch
 │   └── hsv_adjust.launch
+├── scripts/
+│   └── rtsp_camera_publisher.py
 └── src/
     ├── loc_sidelines.cpp
     ├── omni_mirror_sim.cpp
@@ -62,6 +66,8 @@ robocon_localization/
 
 - `loc_sidelines`：主定位节点，订阅 `/robot/image_raw`，发布 `/robot/pose`。
 - `localization.launch`：只启动定位节点本身，用于单独接入已有图像和里程计话题。
+- `rtsp_camera_publisher.py`：实车 RTSP 鱼眼相机输入节点，只发布 `/robot/image_raw`，不打开窗口。
+- `rtsp_camera.yaml`：实车相机参数，包含 IP、账号、密码、RTSP 路径、输出尺寸、帧率等。
 - `omni_mirror_sim`：仿真中把 `/sim_camera/image_raw` 转成 `/robot/image_raw`。
 - `load_lines_map`：根据 `field_lines.png` 生成匹配模板。
 - `calibrate_dist`：距离表标定。
@@ -82,7 +88,7 @@ robot_bringup/
 作用：
 
 - `sim.launch.py`：直接启动 Gazebo、小车、全景模拟和视觉定位。
-- `real_localization.launch.py`：实物只启动视觉定位。
+- `real_localization.launch.py`：实物默认启动 RTSP 相机发布和视觉定位。
 - 不再包含 `interface_bridge`，因为底层已经直接使用统一话题。
 
 ## `robot_control`
@@ -108,14 +114,7 @@ source [你的项目路径]/jyc/install/setup.bash
 
 ## 编译
 
-在终端中打开你的项目路径，并运行以下命令：
-
-```bash
-colcon build
-source install/setup.bash
-```
-
-或者
+编译要在工作区根目录 `jyc` 下执行，不要在 `jyc/src` 下执行：
 
 ```bash
 cd [你的项目路径]/jyc
@@ -125,14 +124,99 @@ source install/setup.bash
 
 ## 启动
 
+实车默认从 RTSP 鱼眼相机读取图像，发布 `/robot/image_raw`，再启动纯视觉定位：
+
 ```bash
 ros2 launch robot_bringup real_localization.launch.py
 ```
 
-启动后会打开result，match_result，定位窗口（详细见窗口说明）
+启动后相机节点本身不会打开窗口；定位节点会打开 `result`、`match_result`、`定位` 窗口（详细见窗口说明）。
+
+RTSP 相机参数在这里改：
+
+```text
+robocon_localization/config/rtsp_camera.yaml
+```
+
+常用项：
+
+```yaml
+camera_ip: "192.168.10.100"
+username: "admin"
+password: "zxcvbnm12"
+rtsp_url: ""
+backend: "opencv"
+http_paths:
+  - "/video"
+  - "/mjpeg"
+rtsp_paths:
+  - "/stream1"
+  - "/stream2"
+  - "/Streaming/Channels/102"
+output_width: 640
+output_height: 640
+fps_limit: 30.0
+```
+
+`rtsp_url` 留空时会先尝试 `http_paths` 中的 HTTP/MJPEG 流，再尝试 `rtsp_paths` 中的 RTSP 流。当前低延迟调试后的默认策略就是自动尝试这些候选流。
+
+如果只是换相机地址，直接改 `camera_ip` 即可，不需要配置扫描范围。
+
+如果知道完整图像流地址，直接填 `rtsp_url`，它会覆盖 `camera_ip`、`http_paths` 和 `rtsp_paths`：
+
+```yaml
+rtsp_url: "rtsp://admin:zxcvbnm12@192.168.10.100:554/stream2"
+```
+
+如果日志中 `frame_age` 只有几十毫秒，但肉眼看仍有接近 1 秒延迟，说明程序内部没有明显排队，延迟主要来自摄像头编码或 RTSP 码流。优先在摄像头网页后台调整：
+
+```text
+子码流：开启
+分辨率：640x640 / 720x720 / 640x480
+帧率：15fps 或 20fps
+编码：H.264
+B 帧：关闭
+I 帧间隔/GOP：1s 或更小
+码率控制：CBR
+码率：1000~2000 kbps
+```
+
+如果 HTTP/MJPEG 流可用，通常比 H264 RTSP 更低延迟；如果只用 RTSP，则优先使用调好后的低延迟码流地址。可以在 `rtsp_camera.yaml` 中调整 `http_paths` 和 `rtsp_paths` 的顺序。
+
+当前电脑上的 OpenCV 没有 GStreamer 支持，且 GStreamer 缺少 H264 解码插件时，节点会回退到 OpenCV/FFmpeg。若要启用更低缓冲的 GStreamer RTSP 管线，先安装：
+
+```bash
+sudo apt install gstreamer1.0-libav gstreamer1.0-plugins-bad
+```
+
+安装后重新运行：
+
+```bash
+ros2 launch robocon_localization rtsp_camera.launch.py
+```
+
+如果日志出现下面这种内容，说明已经走 GStreamer 低延迟管线：
+
+```text
+opened RTSP with GStreamer: ...
+```
+
+如果仍然只出现 `opened RTSP ... profile=udp_low_delay/tcp_low_delay`，说明还在 OpenCV/FFmpeg 后备路径。也可以在 `rtsp_camera.yaml` 中临时强制：
+
+```yaml
+backend: "gstreamer"
+```
+
+实车启动后检查图像：
+
+```bash
+ros2 topic hz /robot/image_raw
+```
 
 - 参数 `image_topic`: 摄像头发布的话题，默认是 `/robot/image_raw`。
 - 参数 `odom_topic`: 底盘里程计发布的话题，默认是 `/robot/odom`。
+- 参数 `start_rtsp_camera`: 是否启动 RTSP 相机节点，默认 `true`。
+- 参数 `rtsp_params_file`: RTSP 参数文件，默认读取 `robocon_localization/config/rtsp_camera.yaml`。
 - 例:
 
 ```bash
@@ -140,6 +224,20 @@ ros2 launch robot_bringup real_localization.launch.py image_topic:=/camera/image
 ```
 
 表示启动时使用 `/camera/image_raw` 作为图像话题，使用 `/wheel/odom` 作为里程计话题。
+
+控制层 `robot_control/src/Camera.py` 默认读取 `/robot/image_raw`，和底层默认发布话题一致。如果启动时改了 `image_topic`，控制层也要同步写成 `Camera("/camera/image_raw")`。
+
+如果图像已经由其他相机驱动发布到 `/robot/image_raw`，关闭 RTSP 节点：
+
+```bash
+ros2 launch robot_bringup real_localization.launch.py start_rtsp_camera:=false
+```
+
+只启动 RTSP 相机发布节点：
+
+```bash
+ros2 launch robocon_localization rtsp_camera.launch.py
+```
 
 ## 仿真启动
 
@@ -181,7 +279,22 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard /cmd_vel:=/robot/cmd_vel
 
 ## robot_control
 
-控制层代码
+控制层代码。
+
+`robot_control/src/Camera.py` 不直接连接 RTSP，它只订阅底层统一发布的 `/robot/image_raw`。使用前先启动仿真或实车底层：
+
+```bash
+ros2 launch robot_bringup real_localization.launch.py
+```
+
+然后在控制程序里读取：
+
+```python
+from Camera import Camera
+
+camera = Camera()
+frame = camera.Read(timeout_s=1.0)
+```
 
 ## 窗口说明
 
@@ -228,7 +341,7 @@ match hold 0/60 score=...
 
 说明：
 
-- `/robot/image_raw`：定位图像。仿真由 `omni_mirror_sim` 发布，实物由真实相机发布或 remap。
+- `/robot/image_raw`：定位图像。仿真由 `omni_mirror_sim` 发布，实物由 `rtsp_camera_publisher.py` 发布。
 - `/robot/pose`：视觉定位结果，单位米，坐标系 `map`。
 - `/robot/odom`：里程计参考，只用于显示对比。
 - `/robot/cmd_vel`：控制命令，仿真和实物控制层都发这个话题。
@@ -271,10 +384,17 @@ ros2 launch robocon_localization calibrate_dist.launch red_ball_x:=0.1
 控制小球位置分别测完数据之后，重新编译便标定成功。
 
 实车标定：
-让真实相机发布 `/robot/image_raw`，然后运行：
+先启动真实相机发布 `/robot/image_raw`：
 
 ```bash
-ros2 run robocon_localization calibrate_dist --ros-args \-p image_topic:=/robot/image_raw
+ros2 launch robocon_localization rtsp_camera.launch.py
+```
+
+然后另开一个终端运行标定节点：
+
+```bash
+ros2 run robocon_localization calibrate_dist --ros-args \
+  -p image_topic:=/robot/image_raw
 ```
 
 启动后在车前方0.1/0.2/...的地面放一个红色标记，同时终端会输出小车距离这个标记的像素值。

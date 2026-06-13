@@ -16,6 +16,14 @@
   <depend>tf2</depend>
 
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>gstreamer1.0-plugins-base</exec_depend>
+  <exec_depend>gstreamer1.0-plugins-bad</exec_depend>
+  <exec_depend>gstreamer1.0-plugins-good</exec_depend>
+  <exec_depend>gstreamer1.0-libav</exec_depend>
+  <exec_depend>python3-gi</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>rclpy</exec_depend>
   <exec_depend>robocon25_sim</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>

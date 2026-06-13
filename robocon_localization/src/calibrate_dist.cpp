@@ -4,10 +4,17 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/opencv.hpp>
 #include <cmath>
+#include <chrono>
+#include <string>
 
 using namespace cv;
+using namespace std::chrono_literals;
+
+static bool received_image = false;
 
 void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
+    received_image = true;
+
     cv_bridge::CvImagePtr cv_ptr;
     try {
         cv_ptr = cv_bridge::toCvCopy(msg, sensor_msgs::image_encodings::BGR8);
@@ -26,7 +33,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
     int distance = -1;
     Point red_point(-1, -1);
 
-    Mat image_show = image_raw.clone(); // Create a copy of the raw image for display
+    Mat image_show = image_raw.clone(); // 拷贝原始图像用于显示
 
     for (int y = 0; y < image_hsv.rows; ++y) {
         for (int x = 0; x < image_hsv.cols; ++x) {
@@ -60,7 +67,7 @@ void imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
         ROS_INFO("未扫描到红色");
     }
 
-    // Display the image in a window
+    // 在窗口中显示图像
     cv::imshow("result", image_show);
     cv::waitKey(30);
 }
@@ -74,6 +81,55 @@ int main(int argc, char** argv) {
         image_topic, rclcpp::SensorDataQoS(), imageCallback);
 
     cv::namedWindow("result", cv::WINDOW_AUTOSIZE);
+    ROS_INFO("距离标定节点已启动，正在订阅图像话题: %s", image_topic.c_str());
+    ROS_INFO("如果窗口一直显示等待图像，请先启动 RTSP 相机或确认 /robot/image_raw 有数据。");
+
+    int wait_ticks = 0;
+    auto wait_timer = node->create_wall_timer(100ms, [node, image_topic, &wait_ticks]() {
+        if (received_image) {
+            return;
+        }
+
+        cv::Mat waiting(260, 760, CV_8UC3, cv::Scalar(0, 0, 0));
+        cv::putText(
+            waiting,
+            "waiting for image topic:",
+            cv::Point(35, 105),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.9,
+            cv::Scalar(0, 255, 255),
+            2,
+            cv::LINE_AA);
+        cv::putText(
+            waiting,
+            image_topic,
+            cv::Point(35, 155),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.8,
+            cv::Scalar(180, 180, 180),
+            2,
+            cv::LINE_AA);
+        cv::putText(
+            waiting,
+            "start camera publisher first",
+            cv::Point(35, 210),
+            cv::FONT_HERSHEY_SIMPLEX,
+            0.75,
+            cv::Scalar(180, 180, 180),
+            2,
+            cv::LINE_AA);
+        cv::imshow("result", waiting);
+        cv::waitKey(1);
+
+        wait_ticks++;
+        if (wait_ticks % 20 == 0) {
+            RCLCPP_WARN(
+                node->get_logger(),
+                "还没有收到图像，请确认 %s 正在发布",
+                image_topic.c_str());
+        }
+    });
+
     rclcpp::spin(node);
 
     cv::destroyWindow("result");

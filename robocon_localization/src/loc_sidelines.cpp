@@ -78,9 +78,8 @@ static void createSeparatedBluePurpleMasks(const cv::Mat& bgr_image,
     cv::Mat blue_hsv;
     cv::Mat purple_hsv;
 
-    // Blue and purple have very close hue values. Separate them mostly by
-    // brightness and BGR channel shape: blue is light cyan, purple keeps the
-    // red channel low.
+    // 蓝色和紫色的色相很接近，主要靠亮度和 BGR 通道形状区分：
+    // 蓝色更偏浅青，紫色的红色通道保持较低。
     cv::inRange(hsv_image, cv::Scalar(96, 40, 175), cv::Scalar(110, 210, 255), blue_hsv);
     cv::inRange(hsv_image, cv::Scalar(94, 105, 25), cv::Scalar(126, 255, 255), purple_hsv);
 
@@ -913,8 +912,8 @@ static void trackPoseWithDetectedPoints(const std::vector<cv::Point2f>& white_po
 
     float yaw_jump = std::abs(normalizeAngleDeg(pose_yaw - previous_yaw));
     if (yaw_jump > 14.0f) {
-        // A large yaw jump is usually the symmetric 180-degree solution taking over.
-        // Reset yaw before the local retry; otherwise the retry keeps refining the bad branch.
+        // 大幅度 yaw 跳变通常是对称的 180 度解抢占了匹配结果。
+        // 局部重试前先恢复 yaw，否则重试会继续沿着错误分支细化。
         pose_x = previous_x;
         pose_y = previous_y;
         pose_yaw = previous_yaw;
@@ -1594,7 +1593,7 @@ int main(int argc, char** argv) {
     pose_pub = node->create_publisher<geometry_msgs::msg::PoseStamped>(pose_topic, 10);
 
     auto sub = node->create_subscription<sensor_msgs::msg::Image>(
-        image_topic, 1, imageCallback);
+        image_topic, rclcpp::SensorDataQoS(), imageCallback);
     auto odom_sub = node->create_subscription<nav_msgs::msg::Odometry>(
         odom_topic, 10, odomCallback);
 

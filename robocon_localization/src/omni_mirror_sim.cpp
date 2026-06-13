@@ -28,7 +28,7 @@ public:
         flip_azimuth_ = declare_parameter<bool>("flip_azimuth", false);
         flip_radial_ = declare_parameter<bool>("flip_radial", false);
 
-        publisher_ = create_publisher<sensor_msgs::msg::Image>(output_topic_, 1);
+        publisher_ = create_publisher<sensor_msgs::msg::Image>(output_topic_, rclcpp::SensorDataQoS());
         subscription_ = create_subscription<sensor_msgs::msg::Image>(
             input_topic_,
             rclcpp::SensorDataQoS(),

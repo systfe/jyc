@@ -42,7 +42,7 @@ void Cam_RGB_Callback(const sensor_msgs::msg::Image::ConstSharedPtr msg)
 
     Mat imgThresholded;
 
-    //1. 使用上面的Hue,Saturation和Value的阈值范围对图像进行二值化
+    //1. 使用上面的色相、饱和度和亮度阈值范围对图像进行二值化
     Mat maskHSV;
     inRange(imgHSV, Scalar(iLowH, iLowS, iLowV), Scalar(iHighH, iHighS, iHighV), maskHSV); 
 
@@ -72,13 +72,13 @@ int main(int argc, char **argv)
     //生成图像显示和参数调节的窗口空见
     namedWindow("Threshold", WINDOW_AUTOSIZE);
 
-    createTrackbar("LowH", "Threshold", &iLowH, 179); //Hue (0 - 179)
+    createTrackbar("LowH", "Threshold", &iLowH, 179); // 色相，范围 0-179
     createTrackbar("HighH", "Threshold", &iHighH, 179);
 
-    createTrackbar("LowS", "Threshold", &iLowS, 255); //Saturation (0 - 255)
+    createTrackbar("LowS", "Threshold", &iLowS, 255); // 饱和度，范围 0-255
     createTrackbar("HighS", "Threshold", &iHighS, 255);
 
-    createTrackbar("LowV", "Threshold", &iLowV, 255); //Value (0 - 255)
+    createTrackbar("LowV", "Threshold", &iLowV, 255); // 亮度，范围 0-255
     createTrackbar("HighV", "Threshold", &iHighV, 255);
 
     namedWindow("RGB"); 
